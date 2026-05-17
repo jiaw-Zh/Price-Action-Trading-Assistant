@@ -9,8 +9,9 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import httpx
 import typer
 
 from pa_assistant import __version__
@@ -83,6 +84,63 @@ def show_config() -> None:
     settings = get_settings()
     payload = json.loads(settings.model_dump_json())
     typer.echo(json.dumps(payload, indent=2, default=str, sort_keys=True))
+
+
+@app.command(name="check-proxy")
+def check_proxy() -> None:
+    """Ping each exchange's public endpoint to verify network reachability.
+
+    Useful when running behind a local proxy (e.g. clash on 127.0.0.1:7890):
+    confirms the proxy is up, that routing rules work, and that each
+    exchange is reachable. Hits a lightweight endpoint per exchange and
+    reports HTTP status + latency. No data is persisted.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    settings = get_settings()
+    _bootstrap(settings)
+
+    proxy = settings.http_proxy_url
+    typer.secho(
+        f"Proxy: {proxy or '(direct, no proxy configured)'}",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+
+    targets: list[tuple[str, str, str]] = [
+        ("binance", settings.binance_rest_base_url, "/fapi/v1/ping"),
+        ("okx", "https://www.okx.com", "/api/v5/public/time"),
+        ("bybit", "https://api.bybit.com", "/v5/market/time"),
+    ]
+
+    async def _probe(name: str, base: str, path: str) -> None:
+        kwargs: dict[str, Any] = {"timeout": 8.0}
+        if proxy:
+            kwargs["proxy"] = proxy
+        async with httpx.AsyncClient(**kwargs) as client:
+            t0 = _time.perf_counter()
+            try:
+                resp = await client.get(base + path)
+                dt_ms = (_time.perf_counter() - t0) * 1000
+                ok = resp.status_code == 200
+                colour = typer.colors.GREEN if ok else typer.colors.RED
+                typer.secho(
+                    f"  {name:8s} HTTP {resp.status_code}  {dt_ms:>7.0f} ms   {base}{path}",
+                    fg=colour,
+                )
+            except Exception as exc:
+                dt_ms = (_time.perf_counter() - t0) * 1000
+                typer.secho(
+                    f"  {name:8s} ERROR  {dt_ms:>7.0f} ms   "
+                    f"{type(exc).__name__}: {exc}",
+                    fg=typer.colors.RED,
+                )
+
+    async def _run_all() -> None:
+        await _asyncio.gather(*(_probe(n, b, p) for n, b, p in targets))
+
+    _asyncio.run(_run_all())
 
 
 # ---------------------------------------------------------------------------

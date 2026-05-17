@@ -23,6 +23,7 @@ _MANAGED_PREFIXES = (
     "DUCKDB_",
     "API_",
     "OI_",
+    "HTTP_",
 )
 _MANAGED_KEYS = {"SYMBOL", "TIMEFRAMES"}
 

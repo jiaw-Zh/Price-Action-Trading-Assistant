@@ -143,10 +143,11 @@ class SelfAggregatedFundingProvider:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> SelfAggregatedFundingProvider:
+        proxy = settings.http_proxy_url
         return cls(
             binance=BinanceRestClient.from_settings(settings),
-            okx=OkxRestClient(),
-            bybit=BybitRestClient(),
+            okx=OkxRestClient(proxy=proxy),
+            bybit=BybitRestClient(proxy=proxy),
         )
 
     async def aclose(self) -> None:

@@ -65,13 +65,15 @@ class AsyncRestClient:
         retry_min_wait: float = 1.0,
         retry_max_wait: float = 30.0,
         client: httpx.AsyncClient | None = None,
+        proxy: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._headers = {"User-Agent": self.DEFAULT_USER_AGENT, **(headers or {})}
         self._retry_attempts = retry_attempts
-        self._retry_min_wait = retry_min_wait
         self._retry_max_wait = retry_max_wait
+        self._retry_min_wait = retry_min_wait
+        self._proxy = proxy or None  # treat empty string as no proxy
 
         # External clients (e.g. test transports) are borrowed, not owned.
         self._client = client
@@ -81,11 +83,14 @@ class AsyncRestClient:
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                headers=self._headers,
-                timeout=self._timeout,
-            )
+            kwargs: dict[str, Any] = {
+                "base_url": self.base_url,
+                "headers": self._headers,
+                "timeout": self._timeout,
+            }
+            if self._proxy:
+                kwargs["proxy"] = self._proxy
+            self._client = httpx.AsyncClient(**kwargs)
         return self._client
 
     async def aclose(self) -> None:

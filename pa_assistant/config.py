@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8000, ge=1, le=65535)
 
+    # ---------- HTTP proxy ----------
+    # When set, all exchange REST clients route through this HTTP/SOCKS proxy.
+    # Typical local clash setup: ``http://127.0.0.1:7890`` (mixed port).
+    # Leave empty / unset to make direct connections.
+    http_proxy_url: str | None = None
+
     # ---------- Binance ----------
     binance_api_key: SecretStr | None = None
     binance_api_secret: SecretStr | None = None

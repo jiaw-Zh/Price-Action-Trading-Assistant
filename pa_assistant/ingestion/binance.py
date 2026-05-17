@@ -71,6 +71,7 @@ class BinanceRestClient(AsyncRestClient):
         retry_attempts: int = 5,
         retry_min_wait: float = 1.0,
         retry_max_wait: float = 30.0,
+        proxy: str | None = None,
     ) -> None:
         headers: dict[str, str] = {}
         if api_key:
@@ -83,6 +84,7 @@ class BinanceRestClient(AsyncRestClient):
             retry_min_wait=retry_min_wait,
             retry_max_wait=retry_max_wait,
             client=client,
+            proxy=proxy,
         )
         self.api_key = api_key
 
@@ -101,6 +103,7 @@ class BinanceRestClient(AsyncRestClient):
         kwargs: dict[str, Any] = {
             "api_key": api_key,
             "base_url": settings.binance_rest_base_url,
+            "proxy": settings.http_proxy_url,
         }
         kwargs.update(overrides)
         return cls(**kwargs)
