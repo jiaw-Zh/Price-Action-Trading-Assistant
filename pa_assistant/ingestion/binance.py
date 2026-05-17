@@ -5,39 +5,30 @@ Endpoints used:
 * ``GET /fapi/v1/klines``           — historical OHLCV (max 1500 per call)
 * ``GET /fapi/v1/openInterest``     — current open interest snapshot
 * ``GET /fapi/v1/openInterestHist`` — historical OI (≤ 30 days, period-bucketed)
+* ``GET /fapi/v1/premiumIndex``     — mark price + last funding rate
 
 Authentication is not required for these public endpoints, but if an API key
-is configured we attach it via the ``X-MBX-APIKEY`` header — some IP-rate-limit
-tiers prefer it.
+is configured we attach it via the ``X-MBX-APIKEY`` header.
 
 Design choices:
 
 * All times exchanged with the API are **milliseconds since epoch**. Datetimes
-  in the public Python interface are timezone-aware UTC where applicable.
-* Transient HTTP errors (5xx, 429, network) trigger exponential-backoff
-  retries via :mod:`tenacity`. Retry parameters are constructor-injectable so
-  unit tests can run without real waits.
-* The client owns its :class:`httpx.AsyncClient` by default but accepts an
-  external one (used by tests via ``MockTransport``).
+  in the public Python interface are naive UTC by convention.
+* HTTP retries / lifecycle are inherited from
+  :class:`pa_assistant.ingestion._http.AsyncRestClient`.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from types import TracebackType
 from typing import Any, Final
 
 import httpx
 import polars as pl
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from pa_assistant.config import Settings
+from pa_assistant.ingestion._http import AsyncRestClient
 from pa_assistant.logging import get_logger
 
 log = get_logger(__name__)
@@ -67,29 +58,7 @@ def interval_to_ms(interval: str) -> int:
         raise ValueError(f"unsupported kline interval: {interval!r}") from exc
 
 
-# Exception classes considered transient on REST calls.
-_TRANSIENT_HTTPX_ERRORS: Final[tuple[type[BaseException], ...]] = (
-    httpx.ConnectError,
-    httpx.ReadError,
-    httpx.WriteError,
-    httpx.PoolTimeout,
-    httpx.ConnectTimeout,
-    httpx.ReadTimeout,
-    httpx.RemoteProtocolError,
-)
-
-
-def _is_transient(exc: BaseException) -> bool:
-    """Predicate for tenacity: is *exc* worth retrying?"""
-    if isinstance(exc, _TRANSIENT_HTTPX_ERRORS):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        return status >= 500 or status == 429
-    return False
-
-
-class BinanceRestClient:
+class BinanceRestClient(AsyncRestClient):
     """Async client for Binance USDT-M Futures public REST endpoints."""
 
     def __init__(
@@ -103,18 +72,19 @@ class BinanceRestClient:
         retry_min_wait: float = 1.0,
         retry_max_wait: float = 30.0,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["X-MBX-APIKEY"] = api_key
+        super().__init__(
+            base_url=base_url,
+            headers=headers,
+            timeout=timeout,
+            retry_attempts=retry_attempts,
+            retry_min_wait=retry_min_wait,
+            retry_max_wait=retry_max_wait,
+            client=client,
+        )
         self.api_key = api_key
-        self._timeout = timeout
-        self._retry_attempts = retry_attempts
-        self._retry_min_wait = retry_min_wait
-        self._retry_max_wait = retry_max_wait
-
-        # External clients (e.g. test transports) are not owned/closed by us.
-        self._client = client
-        self._owned_client = client is None
-
-    # ----- Construction helpers -----
 
     @classmethod
     def from_settings(
@@ -135,62 +105,6 @@ class BinanceRestClient:
         kwargs.update(overrides)
         return cls(**kwargs)
 
-    # ----- Lifecycle -----
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            headers = {"User-Agent": "pa-assistant/0.1"}
-            if self.api_key:
-                headers["X-MBX-APIKEY"] = self.api_key
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                headers=headers,
-                timeout=self._timeout,
-            )
-        return self._client
-
-    async def aclose(self) -> None:
-        if self._client is not None and self._owned_client:
-            await self._client.aclose()
-            self._client = None
-
-    async def __aenter__(self) -> BinanceRestClient:
-        self._get_client()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        await self.aclose()
-
-    # ----- Internal HTTP plumbing -----
-
-    def _make_retrying(self) -> AsyncRetrying:
-        return AsyncRetrying(
-            stop=stop_after_attempt(self._retry_attempts),
-            wait=wait_exponential(
-                multiplier=1,
-                min=self._retry_min_wait,
-                max=self._retry_max_wait,
-            ),
-            retry=retry_if_exception(_is_transient),
-            reraise=True,
-        )
-
-    async def _get(self, path: str, **params: Any) -> Any:
-        """Issue a GET request with retry and JSON decoding."""
-        async for attempt in self._make_retrying():
-            with attempt:
-                client = self._get_client()
-                response = await client.get(path, params=params)
-                response.raise_for_status()
-                return response.json()
-        # AsyncRetrying with reraise=True either returns above or raises.
-        raise AssertionError("unreachable: retry loop exited without result")
-
     # ----- Public API: klines -----
 
     async def get_klines(
@@ -202,10 +116,7 @@ class BinanceRestClient:
         end_ms: int | None = None,
         limit: int = KLINES_PAGE_LIMIT,
     ) -> list[list[Any]]:
-        """Fetch one page of klines.
-
-        Returns the raw 12-element rows as documented by Binance.
-        """
+        """Fetch one page of klines (raw 12-element rows from Binance)."""
         if interval not in INTERVAL_MS:
             raise ValueError(f"unsupported kline interval: {interval!r}")
 
@@ -233,11 +144,7 @@ class BinanceRestClient:
         end_ms: int,
         page_limit: int = KLINES_PAGE_LIMIT,
     ) -> AsyncIterator[list[list[Any]]]:
-        """Yield successive pages of klines covering ``[start_ms, end_ms)``.
-
-        The cursor advances past the last returned bar by one ``interval``,
-        guaranteeing forward progress and de-duplicating page boundaries.
-        """
+        """Yield successive pages of klines covering ``[start_ms, end_ms)``."""
         if start_ms >= end_ms:
             return
         bar_ms = interval_to_ms(interval)
@@ -293,27 +200,19 @@ class BinanceRestClient:
             raise RuntimeError(f"unexpected openInterestHist payload: {result!r}")
         return result
 
+    # ----- Public API: funding rate -----
+
+    async def get_funding_rate(self, symbol: str) -> dict[str, Any]:
+        """Current premium index — includes ``lastFundingRate``."""
+        result = await self._get("/fapi/v1/premiumIndex", symbol=symbol.upper())
+        if not isinstance(result, dict):
+            raise RuntimeError(f"unexpected premiumIndex payload: {result!r}")
+        return result
+
 
 # ---------------------------------------------------------------------------
-# Polars conversion helpers
+# Polars conversion helpers (unchanged from previous revision).
 # ---------------------------------------------------------------------------
-
-# Kline column order matches the kline_1m table schema. Keep them in sync.
-_KLINE_COLUMNS: Final[tuple[str, ...]] = (
-    "open_time",
-    "close_time",
-    "symbol",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "quote_volume",
-    "trade_count",
-    "taker_buy_base",
-    "taker_buy_quote",
-    "is_closed",
-)
 
 
 def _ms_to_naive_utc(ms: int) -> datetime:
@@ -332,10 +231,10 @@ def klines_to_polars(rows: list[list[Any]], symbol: str) -> pl.DataFrame:
          taker_buy_base, taker_buy_quote, ignored]
 
     Historical klines from REST are always finalized, so ``is_closed`` is set
-    to ``True``. WebSocket streams should override this for the live bar.
+    to ``True``.
     """
     if not rows:
-        return _empty_klines_df(symbol)
+        return _empty_klines_df()
 
     sym = symbol.upper()
     return pl.DataFrame(
@@ -372,7 +271,7 @@ def klines_to_polars(rows: list[list[Any]], symbol: str) -> pl.DataFrame:
     )
 
 
-def _empty_klines_df(symbol: str) -> pl.DataFrame:
+def _empty_klines_df() -> pl.DataFrame:
     """Empty DataFrame with the canonical kline schema."""
     return pl.DataFrame(
         schema={

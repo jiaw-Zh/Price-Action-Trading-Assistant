@@ -1,13 +1,13 @@
-"""Data ingestion: Binance + Coinglass connectors.
+"""Data ingestion: exchange + funding-rate connectors.
 
 Submodules:
 
-* :mod:`pa_assistant.ingestion.binance` — Binance USDT-M Futures REST client
-  (historical klines, open interest). WebSocket streams will land in a sibling
-  module ``binance_ws``.
-* :mod:`pa_assistant.ingestion.coinglass` — *(planned)* Coinglass REST client
-  for OI-weighted funding rate, with a multi-exchange self-aggregation
-  fallback in ``funding_aggregator``.
+* :mod:`pa_assistant.ingestion._http`  — common async HTTP base class
+* :mod:`pa_assistant.ingestion.binance` — Binance USDT-M Futures REST
+* :mod:`pa_assistant.ingestion.okx`     — OKX V5 public REST
+* :mod:`pa_assistant.ingestion.bybit`   — Bybit V5 public REST
+* :mod:`pa_assistant.ingestion.funding` — funding-rate Provider abstraction
+  with self-aggregated implementation (Coinglass stubbed for now)
 """
 
 from pa_assistant.ingestion.binance import (
@@ -16,10 +16,28 @@ from pa_assistant.ingestion.binance import (
     interval_to_ms,
     klines_to_polars,
 )
+from pa_assistant.ingestion.bybit import BybitRestClient
+from pa_assistant.ingestion.funding import (
+    CoinglassFundingProvider,
+    ExchangeFundingSnapshot,
+    FundingProvider,
+    SelfAggregatedFundingProvider,
+    WeightedFundingRate,
+    make_funding_provider,
+)
+from pa_assistant.ingestion.okx import OkxRestClient
 
 __all__ = [
     "INTERVAL_MS",
     "BinanceRestClient",
+    "BybitRestClient",
+    "CoinglassFundingProvider",
+    "ExchangeFundingSnapshot",
+    "FundingProvider",
+    "OkxRestClient",
+    "SelfAggregatedFundingProvider",
+    "WeightedFundingRate",
     "interval_to_ms",
     "klines_to_polars",
+    "make_funding_provider",
 ]

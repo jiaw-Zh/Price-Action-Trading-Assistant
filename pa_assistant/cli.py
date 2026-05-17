@@ -9,19 +9,28 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import typer
 
 from pa_assistant import __version__
 from pa_assistant.config import Settings, get_settings
-from pa_assistant.ingestion import BinanceRestClient, klines_to_polars
+from pa_assistant.ingestion import (
+    BinanceRestClient,
+    klines_to_polars,
+    make_funding_provider,
+)
 from pa_assistant.logging import configure_logging, get_logger
 from pa_assistant.storage import (
+    insert_funding_weighted,
     insert_oi_snapshot,
     latest_kline_open_time,
     open_db,
     upsert_klines_1m,
 )
+
+if TYPE_CHECKING:
+    from pa_assistant.ingestion import WeightedFundingRate
 
 app = typer.Typer(
     name="pa",
@@ -174,6 +183,72 @@ def poll_oi(
         fg=typer.colors.GREEN,
         bold=True,
     )
+
+
+@app.command(name="poll-funding")
+def poll_funding(
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """One-shot OI-weighted funding rate snapshot.
+
+    With no Coinglass key configured (default), this aggregates Binance + OKX
+    + Bybit and computes the weighted rate ourselves. Writes one row to
+    ``funding_weighted``.
+    """
+    settings = get_settings()
+    _bootstrap(settings)
+    log = get_logger("cli.poll_funding")
+
+    sym = (symbol or settings.symbol).upper()
+
+    async def _run() -> WeightedFundingRate:
+        provider = make_funding_provider(settings)
+        try:
+            return await provider.get_weighted_funding(sym)
+        finally:
+            await provider.aclose()
+
+    result = asyncio.run(_run())
+
+    raw_components = {
+        s.exchange: {
+            "funding_rate": s.funding_rate,
+            "open_interest_base": s.open_interest_base,
+            "snapshot_time": s.snapshot_time.isoformat(),
+        }
+        for s in result.components
+    }
+
+    with open_db(settings.duckdb_path) as db:
+        insert_funding_weighted(
+            db,
+            symbol=result.symbol,
+            timestamp=result.timestamp,
+            weighted_rate=result.weighted_rate,
+            source=result.source,
+            sample_count=result.sample_count,
+            raw=raw_components,
+        )
+
+    log.info(
+        "funding_polled",
+        symbol=result.symbol,
+        weighted_rate=result.weighted_rate,
+        source=result.source,
+        sample_count=result.sample_count,
+    )
+
+    typer.secho(
+        f"✓ {result.symbol} weighted funding = {result.weighted_rate * 100:+.4f}%  "
+        f"({result.source}, {result.sample_count} sources)",
+        fg=typer.colors.GREEN,
+        bold=True,
+    )
+    for s in result.components:
+        typer.echo(
+            f"  {s.exchange:8s} rate={s.funding_rate * 100:+.4f}%  "
+            f"OI={s.open_interest_base:>14,.2f} (base)"
+        )
 
 
 if __name__ == "__main__":

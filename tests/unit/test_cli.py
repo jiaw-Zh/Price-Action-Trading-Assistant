@@ -172,3 +172,83 @@ def test_poll_oi_writes_snapshot(
     with open_db(db_path) as db:
         rows = db.connect().execute("SELECT symbol, open_interest FROM oi_1m;").fetchall()
         assert rows == [("BTCUSDT", 98765.4321)]
+
+
+def test_poll_funding_writes_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end CLI test for poll-funding using a fake provider."""
+    from pa_assistant.ingestion import funding as funding_module
+    from pa_assistant.ingestion.funding import (
+        ExchangeFundingSnapshot,
+        WeightedFundingRate,
+    )
+
+    db_path = tmp_path / "test.duckdb"
+    monkeypatch.setenv("DUCKDB_PATH", str(db_path))
+
+    class _FakeProvider:
+        name = "self_aggregated"
+
+        async def get_weighted_funding(self, symbol: str) -> WeightedFundingRate:
+            from datetime import datetime as _dt
+
+            return WeightedFundingRate(
+                symbol=symbol.upper(),
+                timestamp=_dt(2020, 1, 1, 0, 0, 0),
+                weighted_rate=-0.00012,
+                source=self.name,
+                sample_count=3,
+                components=(
+                    ExchangeFundingSnapshot(
+                        exchange="binance",
+                        funding_rate=0.0001,
+                        open_interest_base=100_000.0,
+                        snapshot_time=_dt(2020, 1, 1, 0, 0, 0),
+                    ),
+                    ExchangeFundingSnapshot(
+                        exchange="okx",
+                        funding_rate=-0.0003,
+                        open_interest_base=50_000.0,
+                        snapshot_time=_dt(2020, 1, 1, 0, 0, 0),
+                    ),
+                    ExchangeFundingSnapshot(
+                        exchange="bybit",
+                        funding_rate=-0.0001,
+                        open_interest_base=30_000.0,
+                        snapshot_time=_dt(2020, 1, 1, 0, 0, 0),
+                    ),
+                ),
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    def _factory(_settings: object) -> _FakeProvider:
+        return _FakeProvider()
+
+    # Patch the symbol the CLI imports (pa_assistant.cli imported it from
+    # pa_assistant.ingestion at module load time).
+    monkeypatch.setattr(funding_module, "make_funding_provider", _factory)
+    from pa_assistant import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "make_funding_provider", _factory)
+
+    result = runner.invoke(app, ["poll-funding", "--symbol", "BTCUSDT"])
+    assert result.exit_code == 0, result.stdout
+    assert "weighted funding" in result.stdout
+    assert "binance" in result.stdout
+    assert "okx" in result.stdout
+    assert "bybit" in result.stdout
+
+    # Verify row in DuckDB.
+    from pa_assistant.storage import open_db
+
+    with open_db(db_path) as db:
+        rows = (
+            db.connect()
+            .execute("SELECT symbol, weighted_rate, source, sample_count FROM funding_weighted;")
+            .fetchall()
+        )
+    assert rows == [("BTCUSDT", -0.00012, "self_aggregated", 3)]

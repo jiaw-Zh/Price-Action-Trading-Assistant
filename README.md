@@ -33,19 +33,21 @@ Wyckoff · Smart Money Concepts · ICT · VSA · 量价背离 · 流动性猎杀
 
 ## 项目状态
 
-✅ **Phase 0 — 基础设施 + Binance REST**
+✅ **Phase 0 — 基础设施 + 数据接入**
 - 项目骨架、`pyproject.toml`、ruff/mypy/pytest 工具链
 - 配置管理（`pydantic-settings`）
 - 结构化日志（`structlog`）
 - DuckDB schema + repository
 - **Binance Futures REST 客户端**（async + 指数退避重试）
-- **批量 upsert 写入器**（Polars → DuckDB Arrow 桥接）
-- CLI 入口：`version` / `init-db` / `show-config` / `backfill` / `poll-oi`
+- **多所自聚合资金费率**（Binance + OKX + Bybit，按 OI 加权）
+- **`FundingProvider` 抽象**（Coinglass 接入留 stub，未来切换零代码改动）
+- 批量 upsert 写入器（Polars → DuckDB Arrow 桥接）
+- CLI：`init-db` / `show-config` / `backfill` / `poll-oi` / `poll-funding`
 
-🚧 待办（Phase 0 剩余）
-- Binance WebSocket：K 线 / aggTrade / forceOrder（爆仓流）
-- Coinglass REST + 多所自聚合降级
-- 数据完整性校验（序列号 + 漏单检测）
+🚧 待办（Phase 0 剩余 + Phase 1 起步）
+- WebSocket：K 线 / aggTrade / forceOrder（爆仓流）
+- 数据完整性校验（漏单检测）
+- **Phase 1 — 分析引擎**（结构识别、流动性、量价分析）
 
 ## 快速开始
 
@@ -62,6 +64,9 @@ uv run pa backfill --days 7
 # 拉取一次当前 OI 快照
 uv run pa poll-oi
 
+# 拉取一次 OI 加权资金费率（自聚合 Binance + OKX + Bybit）
+uv run pa poll-funding
+
 # 查看当前配置（密钥自动脱敏）
 uv run pa show-config
 
@@ -69,9 +74,12 @@ uv run pa show-config
 make check        # = lint + typecheck + test
 ```
 
-> ⚠️ **IP 区域限制**：`fapi.binance.com` 在某些 IP 段返回 451。
-> 临时方案：`export BINANCE_REST_BASE_URL=https://testnet.binancefuture.com`，
-> 切换到测试网做开发验证。
+> ⚠️ **IP 区域限制**：`fapi.binance.com` 在某些 IP 段返回 451，`api.bybit.com` 在某些
+> IP 段返回 403。两类问题对系统的影响：
+>
+> - Binance 主网不可达 → 设置 `BINANCE_REST_BASE_URL=https://testnet.binancefuture.com`
+>   切换到测试网做开发验证
+> - Bybit 不可达 → 自聚合资金费率会自动跳过 Bybit，从 Binance + OKX 计算（架构设计如此）
 
 环境变量请参考 [`.env.example`](./.env.example)。
 
@@ -79,15 +87,19 @@ make check        # = lint + typecheck + test
 
 ```
 pa_assistant/
-├── config.py            # pydantic-settings
-├── logging.py           # structlog 封装
-├── cli.py               # typer 命令行
+├── config.py                  # pydantic-settings
+├── logging.py                 # structlog 封装
+├── cli.py                     # typer 命令行
 ├── ingestion/
-│   └── binance.py       # Binance Futures REST async client
+│   ├── _http.py               # 共享 async HTTP 基类（重试 + 生命周期）
+│   ├── binance.py             # Binance Futures REST
+│   ├── okx.py                 # OKX V5 public REST
+│   ├── bybit.py               # Bybit V5 public REST
+│   └── funding.py             # FundingProvider 抽象 + 自聚合 + Coinglass stub
 └── storage/
-    ├── schema.py        # DuckDB DDL
-    ├── repository.py    # Database 连接管理
-    └── writers.py       # 批量 upsert（idempotent）
-tests/                   # pytest 单测（47 个）
-docs/                    # 设计文档
+    ├── schema.py              # DuckDB DDL
+    ├── repository.py          # Database 连接管理
+    └── writers.py             # 批量 upsert（idempotent）
+tests/                         # pytest 单测（73 个）
+docs/                          # 设计文档
 ```

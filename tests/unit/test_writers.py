@@ -146,3 +146,87 @@ def test_insert_oi_snapshot_with_notional(tmp_path: Path) -> None:
         conn = db.connect()
         rows = conn.execute("SELECT open_interest, notional_usd FROM oi_1m;").fetchall()
         assert rows == [(100.0, 7_180_000.0)]
+
+
+def test_insert_funding_weighted_basic(tmp_path: Path) -> None:
+    from pa_assistant.storage import insert_funding_weighted
+
+    db_path = tmp_path / "test.duckdb"
+    ts = datetime(2020, 1, 1, 0, 0, 0)
+    with open_db(db_path) as db:
+        insert_funding_weighted(
+            db,
+            symbol="BTCUSDT",
+            timestamp=ts,
+            weighted_rate=-0.00012,
+            source="self_aggregated",
+            sample_count=3,
+            raw={"binance": {"rate": 0.0001}, "okx": {"rate": -0.0002}},
+        )
+        conn = db.connect()
+        rows = conn.execute(
+            "SELECT symbol, weighted_rate, source, sample_count FROM funding_weighted;"
+        ).fetchall()
+        assert rows == [("BTCUSDT", -0.00012, "self_aggregated", 3)]
+
+
+def test_insert_funding_weighted_pk_includes_source(tmp_path: Path) -> None:
+    """Same (symbol, timestamp) but different sources must coexist."""
+    from pa_assistant.storage import insert_funding_weighted
+
+    db_path = tmp_path / "test.duckdb"
+    ts = datetime(2020, 1, 1, 0, 0, 0)
+    with open_db(db_path) as db:
+        insert_funding_weighted(
+            db,
+            symbol="BTCUSDT",
+            timestamp=ts,
+            weighted_rate=0.0001,
+            source="self_aggregated",
+            sample_count=3,
+            raw=None,
+        )
+        insert_funding_weighted(
+            db,
+            symbol="BTCUSDT",
+            timestamp=ts,
+            weighted_rate=0.00011,
+            source="coinglass",
+            sample_count=None,
+            raw=None,
+        )
+        conn = db.connect()
+        rows = conn.execute(
+            "SELECT source, weighted_rate FROM funding_weighted ORDER BY source;"
+        ).fetchall()
+        assert rows == [("coinglass", 0.00011), ("self_aggregated", 0.0001)]
+
+
+def test_insert_funding_weighted_idempotent_per_source(tmp_path: Path) -> None:
+    from pa_assistant.storage import insert_funding_weighted
+
+    db_path = tmp_path / "test.duckdb"
+    ts = datetime(2020, 1, 1, 0, 0, 0)
+    with open_db(db_path) as db:
+        insert_funding_weighted(
+            db,
+            symbol="BTCUSDT",
+            timestamp=ts,
+            weighted_rate=0.0001,
+            source="self_aggregated",
+            sample_count=3,
+            raw=None,
+        )
+        # Re-insert at same PK with a different value — should overwrite.
+        insert_funding_weighted(
+            db,
+            symbol="BTCUSDT",
+            timestamp=ts,
+            weighted_rate=0.0009,
+            source="self_aggregated",
+            sample_count=2,
+            raw=None,
+        )
+        conn = db.connect()
+        rows = conn.execute("SELECT weighted_rate, sample_count FROM funding_weighted;").fetchall()
+        assert rows == [(0.0009, 2)]

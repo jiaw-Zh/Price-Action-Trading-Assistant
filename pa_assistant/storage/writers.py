@@ -7,7 +7,9 @@ re-running an ingestion pipeline cannot corrupt existing data.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from typing import Any
 
 import polars as pl
 
@@ -116,3 +118,44 @@ def latest_kline_open_time(db: Database, symbol: str) -> datetime | None:
         return None
     value = row[0]
     return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+
+
+def insert_funding_weighted(
+    db: Database,
+    *,
+    symbol: str,
+    timestamp: datetime,
+    weighted_rate: float,
+    source: str,
+    sample_count: int | None,
+    raw: dict[str, Any] | None = None,
+) -> None:
+    """Write one weighted-funding row.
+
+    The primary key is ``(symbol, timestamp, source)`` so rows from different
+    sources at the same instant coexist (allows side-by-side comparison).
+    """
+    conn = db.connect()
+    raw_json = json.dumps(raw, default=str) if raw else None
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO funding_weighted
+        (timestamp, symbol, weighted_rate, source, sample_count, raw)
+        VALUES (?, ?, ?, ?, ?, ?);
+        """,
+        [
+            timestamp,
+            symbol.upper(),
+            float(weighted_rate),
+            source,
+            sample_count,
+            raw_json,
+        ],
+    )
+    log.info(
+        "funding_weighted_written",
+        symbol=symbol.upper(),
+        timestamp=timestamp.isoformat(),
+        weighted_rate=weighted_rate,
+        source=source,
+    )
