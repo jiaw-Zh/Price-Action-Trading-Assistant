@@ -1,0 +1,147 @@
+[project]
+name = "pa-assistant"
+version = "0.1.0"
+description = "Price Action Trading Assistant — market context engine for BTC perpetual futures."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "PA Assistant Maintainers" }]
+keywords = ["trading", "bitcoin", "price-action", "wyckoff", "smc"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+# Runtime deps — Phase 0 baseline (storage + config + logging + CLI).
+# Network/exchange clients are added in subsequent phases.
+dependencies = [
+    "duckdb>=1.0.0",
+    "polars>=1.0.0",
+    "numpy>=1.26",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.4",
+    "structlog>=24.1",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-python-dateutil",
+]
+# Phase 0+ networking (added when ingestion lands)
+ingestion = [
+    "httpx>=0.27",
+    "websockets>=12.0",
+    "anyio>=4.3",
+    "tenacity>=8.2",
+]
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
+telegram = ["python-telegram-bot>=21.0"]
+
+[project.scripts]
+pa = "pa_assistant.cli:app"
+
+[project.urls]
+Documentation = "https://github.com/your-org/Price-Action-Trading-Assistant/blob/main/docs/ARCHITECTURE.md"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pa_assistant"]
+
+# ---------------------------------------------------------------------------
+# Ruff — linting + formatting
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["data", "web/dist", "web/build"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "N",    # pep8-naming
+    "RUF",  # Ruff-specific
+    "PT",   # pytest style
+]
+ignore = [
+    "E501",  # line length handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B011"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# ---------------------------------------------------------------------------
+# Mypy — strict typing
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+ignore_missing_imports = false
+files = ["pa_assistant", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["duckdb.*", "polars.*", "structlog.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = "test_*.py"
+asyncio_mode = "auto"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+]
+markers = [
+    "integration: tests that hit external services (skipped by default)",
+    "slow: tests that take > 1s",
+]
+
+[tool.coverage.run]
+source = ["pa_assistant"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]

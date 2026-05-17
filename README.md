@@ -33,4 +33,47 @@ Wyckoff · Smart Money Concepts · ICT · VSA · 量价背离 · 流动性猎杀
 
 ## 项目状态
 
-🚧 设计阶段 — Phase 0 即将启动
+✅ **Phase 0 — 基础设施**（部分完成）
+- 项目骨架、`pyproject.toml`、ruff/mypy/pytest 工具链
+- 配置管理（`pydantic-settings`）
+- 结构化日志（`structlog`）
+- DuckDB schema + repository
+- CLI 入口（`pa version` / `pa init-db` / `pa show-config`）
+
+🚧 待办（Phase 0 剩余）
+- Binance WebSocket 接入：K 线 / Trades / 爆仓流
+- Binance REST：历史 K 线补齐 + OI 轮询
+- Coinglass REST + 自聚合降级
+- 数据完整性校验
+
+## 快速开始
+
+```bash
+# 安装依赖（首次运行会自动建立 .venv）
+uv sync --extra dev
+
+# 初始化 DuckDB 表结构
+uv run pa init-db
+
+# 查看当前配置（密钥自动脱敏）
+uv run pa show-config
+
+# 运行测试 / 类型检查 / 代码风格
+make check        # = lint + typecheck + test
+```
+
+环境变量请参考 [`.env.example`](./.env.example)。
+
+## 目录结构
+
+```
+pa_assistant/        # 主包
+├── config.py        # pydantic-settings
+├── logging.py       # structlog 封装
+├── cli.py           # typer 命令行
+└── storage/
+    ├── schema.py    # DuckDB DDL
+    └── repository.py
+tests/               # pytest 单测 + 集成测占位
+docs/                # 设计文档
+```
