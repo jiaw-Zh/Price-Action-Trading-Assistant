@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # ---------- Binance ----------
     binance_api_key: SecretStr | None = None
     binance_api_secret: SecretStr | None = None
+    # Override REST base URL — set to ``https://testnet.binancefuture.com`` to
+    # use the public testnet (useful when ``fapi.binance.com`` is region-blocked).
+    binance_rest_base_url: str = "https://fapi.binance.com"
 
     # ---------- Coinglass ----------
     coinglass_api_key: SecretStr | None = None
