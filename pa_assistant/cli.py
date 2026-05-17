@@ -87,9 +87,23 @@ def backfill(
     days: int = typer.Option(
         7, min=1, max=365, help="How many days of history to backfill (REST only)."
     ),
-    interval: str = typer.Option("1m", help="Kline interval (only 1m is persisted)."),
+    interval: str = typer.Option(
+        "1m",
+        help=(
+            "Kline interval. Only '1m' is persisted — higher timeframes are "
+            "derived from 1m data via the resampling layer (see ARCHITECTURE.md)."
+        ),
+    ),
 ) -> None:
     """Backfill historical 1m klines from Binance Futures REST."""
+    if interval != "1m":
+        raise typer.BadParameter(
+            f"Only '1m' is persisted (got {interval!r}). "
+            "Higher timeframes are derived from 1m data via resampling — "
+            "see docs/ARCHITECTURE.md §5.3.",
+            param_hint="--interval",
+        )
+
     settings = get_settings()
     _bootstrap(settings)
     log = get_logger("cli.backfill")

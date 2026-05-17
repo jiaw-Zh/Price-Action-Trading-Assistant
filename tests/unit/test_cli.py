@@ -119,6 +119,27 @@ def test_backfill_writes_to_duckdb(
     assert db_path.exists()
 
 
+def test_backfill_rejects_non_1m_interval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The persisted timeframe is 1m only — higher TFs come from resampling.
+
+    Accepting other intervals would silently corrupt ``kline_1m`` (the writer
+    is hardcoded to that table). Validate at the CLI boundary.
+    """
+    db_path = tmp_path / "test.duckdb"
+    monkeypatch.setenv("DUCKDB_PATH", str(db_path))
+
+    result = runner.invoke(app, ["backfill", "--interval", "5m"])
+    assert result.exit_code != 0
+    output = result.stdout + (result.stderr or "")
+    assert "--interval" in output
+    assert "Only '1m' is persisted" in output
+    # No DB file should be created since we bail before any work.
+    assert not db_path.exists()
+
+
 def test_poll_oi_writes_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
