@@ -666,5 +666,100 @@ def analyze_liquidity(
         )
 
 
+@app.command(name="analyze-stop-hunts")
+def analyze_stop_hunts(
+    timeframe: str = typer.Option("1h", help="Resample 1m klines to this TF."),
+    lookback: int = typer.Option(2, min=1, help="Swing fractal lookback."),
+    tolerance_bps: float = typer.Option(5.0, min=0.1, help="Pool cluster tolerance."),
+    min_touches: int = typer.Option(2, min=2, help="Minimum swings per pool."),
+    min_wick_ratio: float = typer.Option(
+        0.5, min=0.0, max=1.0, help="Minimum rejection wick fraction."
+    ),
+    confirmation_bars: int = typer.Option(
+        3, min=0, help="Bars after sweep to verify reversal."
+    ),
+    confirmed_only: bool = typer.Option(
+        False, "--confirmed-only", help="Show only confirmed hunts."
+    ),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Print detected stop-hunt / liquidity-sweep events."""
+    import duckdb
+
+    from pa_assistant.analysis import (
+        detect_liquidity_levels,
+        detect_stop_hunts,
+        resample_ohlcv,
+    )
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        df = conn.execute(
+            "SELECT open_time, open, high, low, close, volume "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+    finally:
+        conn.close()
+
+    if df.is_empty():
+        typer.secho(f"No klines for {sym}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    resampled = resample_ohlcv(df, timeframe)
+    levels = detect_liquidity_levels(
+        resampled,
+        lookback=lookback,
+        tolerance_bps=tolerance_bps,
+        min_touches=min_touches,
+    )
+    hunts = detect_stop_hunts(
+        resampled,
+        levels,
+        min_wick_ratio=min_wick_ratio,
+        confirmation_bars=confirmation_bars,
+    )
+
+    last_close = float(resampled.row(resampled.height - 1, named=True)["close"])
+
+    if confirmed_only:
+        hunts = [h for h in hunts if h.confirmed]
+
+    typer.secho(
+        f"{sym}  {timeframe}  current price: ${last_close:,.2f}",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+
+    n_confirmed = sum(1 for h in hunts if h.confirmed)
+    typer.secho(
+        f"  Stop Hunts  ({len(hunts)} total, {n_confirmed} confirmed)",
+        bold=True,
+    )
+
+    if not hunts:
+        typer.echo("    (no stop-hunt patterns detected)")
+        return
+
+    typer.echo("")
+    for h in hunts:
+        arrow = "▼" if h.side == "high" else "▲"
+        colour = typer.colors.RED if h.side == "high" else typer.colors.GREEN
+        # For high hunts: the bias is bearish (down arrow); for low hunts: bullish (up).
+        bias = "bear reversal" if h.side == "high" else "bull reversal"
+        cflag = "✓ confirmed" if h.confirmed else "  unconfirmed"
+        typer.secho(
+            f"    {h.timestamp:%Y-%m-%d %H:%M}  {arrow} {bias:14s}  "
+            f"pool ${h.pool_price:>9,.2f} ({h.pool_touches}x)  "
+            f"wick {h.wick_ratio:.0%}  vol {h.volume_ratio:>4.1f}x  "
+            f"{cflag}",
+            fg=colour,
+        )
+
+
 if __name__ == "__main__":
     app()
