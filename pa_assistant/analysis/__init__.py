@@ -6,15 +6,20 @@ on Polars DataFrames. Anything network-bound or DuckDB-bound stays in
 
 Submodules:
 
-* :mod:`pa_assistant.analysis.resample`   — 1m OHLCV → higher timeframe
-* :mod:`pa_assistant.analysis.structure`  — swing detection + BOS / CHoCH
-* :mod:`pa_assistant.analysis.volume`     — delta, CVD, VWAP + bands
-* :mod:`pa_assistant.analysis.profile`    — Volume Profile (POC / VAH / VAL)
-* :mod:`pa_assistant.analysis.zones`      — Order Blocks + Fair Value Gaps
-* :mod:`pa_assistant.analysis.liquidity`  — Equal-Highs / Equal-Lows pools
-* :mod:`pa_assistant.analysis.stop_hunt`  — Stop hunt / liquidity sweep events
+* :mod:`pa_assistant.analysis.resample`    — 1m OHLCV → higher timeframe
+* :mod:`pa_assistant.analysis.structure`   — swing detection + BOS / CHoCH
+* :mod:`pa_assistant.analysis.volume`      — delta, CVD, VWAP + bands
+* :mod:`pa_assistant.analysis.profile`     — Volume Profile (POC / VAH / VAL)
+* :mod:`pa_assistant.analysis.zones`       — Order Blocks + Fair Value Gaps
+* :mod:`pa_assistant.analysis.liquidity`   — Equal-Highs / Equal-Lows pools
+* :mod:`pa_assistant.analysis.stop_hunt`   — Stop hunt / liquidity sweep events
+* :mod:`pa_assistant.analysis.divergence`  — Multi-indicator divergences (CVD/Volume/OI)
 """
 
+from pa_assistant.analysis.divergence import (
+    DivergenceEvent,
+    detect_divergences,
+)
 from pa_assistant.analysis.liquidity import (
     LiquidityLevel,
     detect_liquidity_levels,
@@ -36,6 +41,7 @@ from pa_assistant.analysis.zones import (
 )
 
 __all__ = [
+    "DivergenceEvent",
     "FairValueGap",
     "LiquidityLevel",
     "OrderBlock",
@@ -45,6 +51,7 @@ __all__ = [
     "compute_delta",
     "compute_volume_profile",
     "compute_vwap",
+    "detect_divergences",
     "detect_fvgs",
     "detect_liquidity_levels",
     "detect_order_blocks",

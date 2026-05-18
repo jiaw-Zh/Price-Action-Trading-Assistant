@@ -814,5 +814,147 @@ def analyze_stop_hunts(
         )
 
 
+@app.command(name="analyze-divergences")
+def analyze_divergences(
+    timeframe: str = typer.Option("1h", help="Resample 1m klines to this TF."),
+    indicators: str = typer.Option(
+        "cvd,volume,oi",
+        help="Comma-separated subset of cvd / volume / oi.",
+    ),
+    lookback: int = typer.Option(2, min=1, help="Swing fractal lookback."),
+    min_separation_bars: int = typer.Option(
+        3, min=0, help="Minimum bars between two compared swings."
+    ),
+    min_strength: float = typer.Option(
+        0.0,
+        min=0.0,
+        max=1.0,
+        help=(
+            "Filter out divergences below this strength. Note: OI strength "
+            "is naturally small (~1-5%) due to baseline magnitude — keep "
+            "this at 0 if you want OI signals."
+        ),
+    ),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Print CVD / Volume / OI divergences against price swings."""
+    import duckdb
+
+    from pa_assistant.analysis import (
+        compute_delta,
+        detect_divergences,
+        resample_ohlcv,
+    )
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    requested = [s.strip() for s in indicators.split(",") if s.strip()]
+    valid = {"cvd", "volume", "oi"}
+    invalid = set(requested) - valid
+    if invalid:
+        typer.secho(
+            f"Unknown indicator(s): {invalid}. Valid: {valid}.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=2)
+
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        klines = conn.execute(
+            "SELECT open_time, open, high, low, close, volume, "
+            "quote_volume, taker_buy_base "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+        oi_df = conn.execute(
+            "SELECT timestamp AS open_time, open_interest AS oi "
+            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
+            [sym],
+        ).pl()
+    finally:
+        conn.close()
+
+    if klines.is_empty():
+        typer.secho(f"No klines for {sym}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    # Resample klines to the target TF first.
+    resampled = resample_ohlcv(klines, timeframe)
+
+    # Add CVD / volume columns. Volume already exists; CVD is derived.
+    if "cvd" in requested:
+        resampled = compute_delta(resampled)
+
+    # Resample-and-join OI: take the LAST OI value within each bar (snapshot
+    # semantics, not flow). Use Polars' join_asof for nearest-time alignment.
+    if "oi" in requested:
+        if oi_df.is_empty():
+            typer.secho(
+                "  ⚠  No OI history found. Run `pa backfill-oi` first.",
+                fg=typer.colors.YELLOW,
+            )
+        else:
+            # Sort both inputs (required by join_asof) and align OI to each
+            # resampled bar's open_time, taking the most recent OI <= open_time.
+            resampled = resampled.sort("open_time").join_asof(
+                oi_df.sort("open_time"),
+                on="open_time",
+                strategy="backward",
+            )
+
+    from typing import cast
+
+    from pa_assistant.analysis.divergence import Indicator
+
+    active_indicators = cast(
+        list[Indicator],
+        [ind for ind in requested if ind in valid],
+    )
+    events = detect_divergences(
+        resampled,
+        indicators=active_indicators,
+        lookback=lookback,
+        min_separation_bars=min_separation_bars,
+    )
+    events = [e for e in events if e.strength >= min_strength]
+
+    last_close = float(resampled.row(resampled.height - 1, named=True)["close"])
+
+    typer.secho(
+        f"{sym}  {timeframe}  current price: ${last_close:,.2f}",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+    by_indicator: dict[str, int] = {"cvd": 0, "volume": 0, "oi": 0}
+    for e in events:
+        by_indicator[e.indicator] = by_indicator.get(e.indicator, 0) + 1
+
+    summary_parts = [f"{by_indicator[ind]} {ind}" for ind in requested if ind in valid]
+    typer.secho(
+        f"  Divergences  ({len(events)} total: " + ", ".join(summary_parts) + ")",
+        bold=True,
+    )
+
+    if not events:
+        typer.echo("    (no divergences meet the criteria)")
+        return
+
+    typer.echo("")
+    for e in events:
+        arrow = "▼" if e.side == "bearish" else "▲"
+        colour = typer.colors.RED if e.side == "bearish" else typer.colors.GREEN
+        bias = "bearish reversal" if e.side == "bearish" else "bullish reversal"
+        typer.secho(
+            f"    {e.timestamp:%Y-%m-%d %H:%M}  {arrow} {bias:18s}  "
+            f"{e.indicator:7s}  "
+            f"price ${e.prior_swing_price:>8,.0f}→${e.swing_price:<8,.0f}  "
+            f"ind {e.prior_indicator_value:>+10,.1f}→{e.indicator_value:<+10,.1f}  "
+            f"strength {e.strength:.0%}",
+            fg=colour,
+        )
+
+
 if __name__ == "__main__":
     app()
