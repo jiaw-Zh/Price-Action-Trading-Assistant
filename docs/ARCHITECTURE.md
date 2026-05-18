@@ -63,25 +63,25 @@
 
 ### 3.2 数据源分工
 
-| 数据 | 来源 | 接入方式 | 用途 |
-|---|---|---|---|
-| K 线 OHLCV | **Binance Futures** | WebSocket（实时）+ REST（历史） | 价格结构基础 |
-| 逐笔成交（Trades） | **Binance Futures** | WebSocket | CVD、Delta、主动买卖 |
-| 持仓量（OI） | **Binance Futures** | REST 轮询（1 分钟） | 加仓/减仓判断 |
-| 爆仓流（Liquidations） | **Binance Futures** | WebSocket（forceOrder） | 流动性猎杀确认 |
-| 多空账户比 | **Binance Futures** | REST 轮询（5 分钟） | 散户立场参考 |
-| **持仓量加权资金费率** | **Coinglass API** | REST 轮询（5-15 分钟） | 多空杠杆情绪极值 ⭐ |
-| 单所资金费率（备份） | Binance | REST | Coinglass 故障时降级使用 |
+| 数据 | 来源 | 接入方式 | 用途 | 状态 |
+|---|---|---|---|---|
+| K 线 OHLCV | **Binance Futures** | REST（历史回填） | 价格结构基础 | ✅ 已实现 |
+| 持仓量（OI） | **Binance Futures** | REST 轮询（1 分钟） | 加仓/减仓判断 | ✅ 已实现 |
+| **OI 加权资金费率** | **5 源自聚合**（Binance + OKX + Bybit + Bitget + Gate.io） | REST 并行拉取 | 多空杠杆情绪极值 | ✅ 已实现 |
+| K 线实时流 | **Binance Futures** | WebSocket | 实时更新 | ⏳ 推迟 |
+| 逐笔成交（Trades） | **Binance Futures** | WebSocket | CVD 精确计算、主动买卖 | ⏳ 推迟 |
+| 爆仓流（Liquidations） | **Binance Futures** | WebSocket（forceOrder） | 流动性猎杀确认 | ⏳ 推迟 |
+| 多空账户比 | **Binance Futures** | REST 轮询（5 分钟） | 散户立场参考 | ⏳ 未实现 |
 
-> **为什么资金费率用 Coinglass 而不是 Binance？**
-> Binance 的资金费率只反映 Binance 一家。Coinglass 的 OI 加权资金费率聚合了主流交易所，按持仓量加权，能更真实地反映**全市场杠杆情绪**。在极值（如 +0.05% 以上或 -0.02% 以下）时，反向指标价值显著高于单所数据。
+> **为什么不用 Coinglass？**
+> Coinglass 付费 API 价格较高，且网页端数据经过加密无法抓取。
+> 实测发现 5 源自聚合（按 OI 加权）的结果与 Coinglass 方向一致，
+> 精度足够用于极值判断。`FundingProvider` Protocol 保留了未来
+> 接入 Coinglass 付费 API 的能力，零代码切换。
 
-### 3.3 关于 Coinglass 的注意事项
-
-1. **付费 API**：所需的加权资金费率属于 Coinglass 付费 API，最低套餐起步（具体价格以官方为准）。
-2. **频率限制**：付费层一般 30-120 req/min，缓存 + 5-15 秒轮询足够覆盖需求。
-3. **降级方案**：API 不可用时，系统自动切换到"自聚合模式"——从 Binance / OKX / Bybit 各自拉资金费率 + OI，按 OI 加权计算。
-4. **抽象隔离**：Coinglass 调用封装在独立的 `funding_provider` 模块，未来可无缝替换数据源。
+> **为什么 K 线只用 Binance？**
+> 多交易所聚合 K 线会产生虚假的 BOS/CHoCH 信号（不同所的 wick
+> 不同导致 swing 判断不一致）。单源保证结构分析的确定性。
 
 ---
 
@@ -141,20 +141,30 @@
 
 ### 5.1 数据接入层（Ingestion）
 
-**职责**：稳定、低延迟地获取数据，封装两个 Connector。
+**职责**：稳定地获取数据，封装多个交易所 Connector。
 
-#### Binance Connector
-- 基于 `python-binance` 或 `ccxt.pro` 的异步 WebSocket
-- 订阅流：`btcusdt@kline_*`、`btcusdt@aggTrade`、`btcusdt@forceOrder`
-- REST 轮询：OI（1 分钟）、多空比（5 分钟）、历史 K 线补齐
-- 断线重连 + 序列号校验（防止漏单导致 CVD 失真）
+#### 共享基类 `_http.py`
+- 基于 `httpx.AsyncClient` 的异步 HTTP 基类
+- 内置指数退避重试（可配置次数 + 间隔）
+- 统一代理注入（`HTTP_PROXY_URL` 环境变量，支持 HTTP/SOCKS5）
+- 所有子类继承此基类，无需重复处理网络细节
 
-#### Coinglass Connector
-- 基于 `httpx` 的异步 REST 客户端
-- 5-15 秒轮询加权资金费率（具体频率根据套餐限频调整）
-- 内置 LRU 缓存避免重复请求
-- 异常时自动降级到"Binance + OKX + Bybit 自聚合"模式
-- API Key 通过环境变量注入，绝不入库
+#### Binance Connector（已实现 ✅）
+- REST：历史 K 线批量回填、OI 快照轮询
+- 仅使用公开 API（无需 API Key）
+- 代理必须配置（大量 VPS IP 被 CDN 封锁）
+
+#### 多所资金费率聚合（已实现 ✅）
+- `FundingProvider` Protocol 抽象
+- 5 个实现：Binance / OKX / Bybit / Bitget / Gate.io
+- `asyncio.gather(return_exceptions=True)` 并行拉取
+- 按各所 OI 加权计算全市场资金费率
+- 任何 1-2 源失败自动降级（不影响整体）
+- Coinglass 付费 API 留 stub，未来可零代码切换
+
+#### WebSocket（⏳ 推迟）
+- K 线 / aggTrade / forceOrder 流
+- 待定时任务基础完成后再接入
 
 ### 5.2 存储层（Storage）
 
@@ -173,17 +183,21 @@
 DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 未来数据量上 GB 级再考虑 ClickHouse。
 
-### 5.3 数据处理层（Processing）
+### 5.3 数据处理层（Processing / Analysis）
 
-- **统一使用 Polars**（不用 pandas，性能差 5-10 倍且 API 更现代）
-- **多周期对齐**：1m 是基础，其他周期用 `group_by_dynamic` 实时聚合
-- **增量计算**：所有指标支持滑动窗口流式更新
-- **派生数据**：
-  - **CVD**（Cumulative Volume Delta）
-  - **Delta per bar**（每根 K 线主动买卖差）
-  - **Volume Profile**（POC / VAH / VAL）
-  - **VWAP**（带 1σ/2σ 通道）
-  - **OI Delta**（持仓量变化，区分增仓/减仓）
+实际实现为 `pa_assistant/analysis/` 包，纯函数，无 IO。
+
+- **统一使用 Polars**（`polars-lts-cpu`，兼容无 AVX2 环境）
+- **多周期派生**：只持久 1m K 线，更高 TF 通过 `resample_ohlcv()` 按需聚合
+  - 支持：3m / 5m / 15m / 30m / 1h / 2h / 4h / 6h / 8h / 12h / 1d / 1w
+  - 基于 Polars `group_by_dynamic`，保证多周期一致性
+- **已实现的派生数据**：
+  - **Delta per bar** = `2 * taker_buy_base - volume`（主动买卖差）
+  - **CVD**（Cumulative Volume Delta）= `cumsum(delta)`
+  - **VWAP** = `cumsum(quote_volume) / cumsum(volume)`（真实成交额，非 typical 近似）
+  - **VWAP sigma 通道**：基于 `E[p^2|v] - vwap^2` 的标准差近似
+  - **Volume Profile**：按 [low, high] 范围比例分配成交量到 n_bins 个价格格
+  - **POC / VAH / VAL**：市场剖面算法（从 POC 向外扩展至覆盖 70% 成交量）
 
 ### 5.4 分析引擎（Analysis Engine）— 系统的大脑
 
@@ -199,26 +213,28 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 
 合约交易的本质就是流动性博弈，这是整个系统最关键的部分。
 
-- **流动性池识别（Liquidity Pools）**
-  - Equal Highs / Equal Lows（等高/等低，散户止损密集区）
+- **Order Block（订单块）** ✅ 已实现
+  - BOS/CHoCH 之前的最后一根反向 K 线
+  - 记录 body（保守入场）和 wick（宽松入场）两个范围
+  - mitigation 跟踪：首次价格回踩 body 即标记失效
+  - lookback 可配置（默认 10 根）
+
+- **FVG（Fair Value Gap，公允价值缺口）** ✅ 已实现
+  - 三根 K 线形成的失衡区（纯几何，独立于结构事件）
+  - 区分 Bullish / Bearish FVG
+  - mitigation 跟踪：首次任意 K 线触碰 gap 即标记
+
+- **流动性池识别（Liquidity Pools）** ⏳ Phase 2
+  - Equal Highs / Equal Lows（散户止损密集区）
   - 前期 Swing High / Low（经典止损位）
   - 整数关口（心理价位）
 
-- **Stop Hunt / Liquidity Sweep 检测**
+- **Stop Hunt / Liquidity Sweep 检测** ⏳ Phase 2
   - 模式：快速插针突破 → 成交量放大 → 价格迅速收回
-  - 配合 Trades 数据确认：扫单时是否有大额逆向主动单接住
-  - 输出：**猎杀概率评分** + 反转目标位
+  - 输出：猎杀概率评分 + 反转目标位
 
-- **Order Block（订单块）**
-  - BOS/CHoCH 之前的最后一根反向 K 线
-  - 标注未被触及的 OB 作为潜在反应区
-
-- **FVG（Fair Value Gap，公允价值缺口）**
-  - 三根 K 线形成的失衡区
-  - 区分 Bullish / Bearish FVG，标注未填补的缺口
-
-- **爆仓热力图**
-  - 基于 Binance 爆仓流 + OI 估算多空爆仓密集区
+- **爆仓热力图** ⏳ Phase 2
+  - 基于 OI + 价格结构估算多空爆仓密集区
   - 与价格结构叠加，标注"磁吸位"
 
 #### 5.4.3 量价分析模块（VSA）
@@ -268,9 +284,9 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 
 ### 5.6 用户交互层
 
-- **Web Dashboard**（主入口）：FastAPI 后端 + React 前端 + TradingView Lightweight Charts
-- **Telegram Bot**：把高质量情境报告推送到手机
-- **CLI 工具**：批量回测、数据导出、运维（基于 `typer`）
+- **CLI 工具**（已实现 ✅）：基于 `typer`，9 个命令覆盖数据接入 + 分析全流程
+- **推送渠道**（Phase 3）：Telegram / 企业微信 / 飞书 — 配置占位已预留
+- **Web Dashboard**（暂跳过）：FastAPI + TradingView Lightweight Charts — 需要时再做
 
 ---
 
@@ -312,22 +328,25 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 | 语言 / 运行时 | **Python 3.11+** | 单 symbol 单所，并发不是瓶颈；分析逻辑迭代速度第一 |
 | 包管理 | **uv** + `pyproject.toml` | 极快、现代、单一可信源 |
 | 异步框架 | **asyncio** | 标准库，足够 |
-| 交易所接入 | `python-binance` 或 `ccxt.pro` | Binance 现成支持 |
-| HTTP 客户端 | `httpx`（异步） | Coinglass REST + 备份接口 |
-| 数据处理 | **Polars** + NumPy | 比 pandas 快 5-10 倍，API 更现代 |
-| 存储 | **DuckDB** | 单文件、零运维、SQL 直查 |
-| Web 后端 | **FastAPI** + Uvicorn | 异步、轻量、自动文档 |
-| Web 前端 | React + TypeScript + **TradingView Lightweight Charts** | 图表事实标准 |
-| Telegram | `python-telegram-bot` | 推送告警 |
-| CLI | `typer` | 类型友好 |
-| 类型检查 | **mypy** + **ruff** | 弥补动态类型 |
-| 测试 | `pytest` + `pytest-asyncio` | 单测 + 集成测 |
-| 部署 | Docker（单容器） | 简洁起步 |
-| 调度 | `APScheduler` 或 asyncio loop | 周期任务（OI 拉取等） |
+| HTTP 客户端 | **httpx**（异步 + SOCKS5 支持） | 所有交易所 REST 统一用 |
+| 数据处理 | **Polars**（`polars-lts-cpu`） | 比 pandas 快 5-10 倍，API 更现代；lts-cpu 兼容无 AVX2 环境 |
+| 存储 | **DuckDB** | 单文件、零运维、SQL 直查、Polars Arrow 原生互通 |
+| 配置 | **pydantic-settings** | 类型安全、`.env` 自动加载、`SecretStr` 脱敏 |
+| 日志 | **structlog** | 结构化 JSON 日志，开发时 pretty-print |
+| CLI | **typer** | 类型友好、自动帮助文档 |
+| 类型检查 | **mypy strict** + **ruff** | 弥补动态类型，lint 统一 |
+| 测试 | **pytest** + `pytest-asyncio` | 单测 + 集成测（当前 165 个） |
+
+**当前未使用但保留规划**：
+- Web 后端：FastAPI + Uvicorn（Phase 1 切片 4 暂跳过）
+- Web 前端：TradingView Lightweight Charts
+- 推送：Telegram / 企业微信 / 飞书（Phase 3）
+- 部署：Docker（单容器）
+- 调度：APScheduler 或 asyncio 常驻循环
 
 **未来可选升级**：
 - 数据规模 > 10GB → 迁移 ClickHouse
-- 多交易所聚合需求 → 用 Go/Rust 重写 Ingestion 网关，通过 Redis Streams 接入
+- 热点模块 → Rust + PyO3 重写
 - 机器学习辅助形态识别 → PyTorch（仅作辅助评分，不替代规则）
 
 ---
@@ -379,54 +398,50 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 
 ## 九、目录结构
 
-单 Python 项目，模块化但不过度工程：
-
 ```
 Price-Action-Trading-Assistant/
 ├── docs/
-│   ├── ARCHITECTURE.md         # 本文件
-│   └── trading-theory/         # 各交易理论笔记（Wyckoff/SMC/ICT…）
+│   └── ARCHITECTURE.md         # 本文件
 ├── pa_assistant/               # 主包
 │   ├── __init__.py
-│   ├── config.py               # 配置管理
-│   ├── ingestion/              # 数据接入
-│   │   ├── binance.py
-│   │   ├── coinglass.py
-│   │   └── funding_aggregator.py  # 多所自聚合（降级方案）
-│   ├── storage/                # DuckDB 封装
-│   │   ├── schema.py
-│   │   └── repository.py
-│   ├── processing/             # 数据处理
-│   │   ├── timeframe.py        # 多周期对齐
-│   │   ├── volume.py           # CVD/Delta/Profile
-│   │   └── vwap.py
-│   ├── analyzer/               # 分析引擎 ⭐
-│   │   ├── structure.py        # BOS/CHoCH/Swing
-│   │   ├── liquidity.py        # Order Block/FVG/Stop Hunt
-│   │   ├── vsa.py              # 量价背离/VSA
-│   │   ├── wyckoff.py          # Wyckoff 状态机
-│   │   └── aggregator.py       # 上下文聚合器
-│   ├── alerts/                 # 告警引擎
-│   │   ├── rules.py
-│   │   └── telegram.py
-│   ├── journal/                # 交易日志
-│   ├── api/                    # FastAPI 后端
-│   │   ├── main.py
-│   │   └── routers/
-│   ├── replay/                 # 回放/复盘
-│   └── cli.py                  # Typer 命令行
-├── web/                        # React 前端
-│   ├── src/
-│   └── package.json
+│   ├── config.py               # pydantic-settings 配置管理
+│   ├── logging.py              # structlog 封装
+│   ├── cli.py                  # typer CLI（9 个命令）
+│   ├── ingestion/              # 数据接入层（无分析逻辑）
+│   │   ├── _http.py            # 共享 async HTTP 基类（重试 + 代理）
+│   │   ├── binance.py          # Binance Futures REST
+│   │   ├── okx.py              # OKX V5 REST
+│   │   ├── bybit.py            # Bybit V5 REST
+│   │   ├── bitget.py           # Bitget V2 Mix REST
+│   │   ├── gateio.py           # Gate.io Futures V4 REST
+│   │   └── funding.py          # FundingProvider Protocol + 5 源自聚合
+│   ├── analysis/               # 纯函数分析层（无 IO，只接受 Polars DF）
+│   │   ├── resample.py         # 1m → 任意 TF (group_by_dynamic)
+│   │   ├── structure.py        # 分形 swing + BOS/CHoCH 状态机
+│   │   ├── volume.py           # Delta / CVD / VWAP + sigma 通道
+│   │   ├── profile.py          # Volume Profile (POC / VAH / VAL)
+│   │   └── zones.py            # Order Block + FVG + mitigation 跟踪
+│   └── storage/                # 持久层
+│       ├── schema.py           # DuckDB DDL
+│       ├── repository.py       # Database 连接管理
+│       └── writers.py          # 批量 upsert（幂等，Polars → Arrow）
 ├── tests/
-│   ├── unit/
-│   └── integration/
-├── scripts/                    # 一次性脚本（数据导出、回测）
-├── data/                       # DuckDB 文件（git ignore）
-├── .env.example
-├── pyproject.toml              # uv + 项目配置
-├── Dockerfile
-├── docker-compose.yml          # 可选
+│   ├── conftest.py             # 环境隔离 fixture
+│   └── unit/                   # 165 个单测
+│       ├── test_binance.py
+│       ├── test_funding_aggregator.py
+│       ├── test_okx_bybit_rest.py
+│       ├── test_proxy.py
+│       ├── test_writers.py
+│       ├── test_resample.py
+│       ├── test_structure.py
+│       ├── test_volume.py
+│       ├── test_profile.py
+│       └── test_zones.py
+├── data/                       # DuckDB 文件（.gitignore）
+├── .env.example                # 环境变量模板（含推送渠道占位）
+├── pyproject.toml              # uv 项目配置 + 依赖
+├── Makefile                    # make check = lint + typecheck + test
 └── README.md
 ```
 
@@ -442,11 +457,22 @@ Price-Action-Trading-Assistant/
 
 ---
 
-## 十一、下一步
+## 十一、当前状态与下一步
 
-1. 确认本架构是否符合预期
-2. 确认 Coinglass 套餐 / 是否先用自聚合方案起步
-3. 搭建项目骨架（`uv init` + 基础目录 + 配置 + CI）
-4. 实现 Phase 0 的 Binance 数据接入
+### 已完成
+
+| Phase | 内容 | 测试 |
+|---|---|---|
+| 0 | 基础设施 + 5 源资金费率 + 代理 + 回填 | 117 |
+| 1.1 | 多周期重采样 + swing + BOS/CHoCH | +16 |
+| 1.2 | Delta/CVD + VWAP + Volume Profile | +29 |
+| 1.3 | Order Block + FVG + mitigation | +19 |
+| **合计** | | **165** |
+
+### 下一步优先级
+
+1. **Phase 2 — 流动性引擎**：Equal Highs/Lows、Stop Hunt、量价背离
+2. **定时任务 / 常驻服务**：让数据自动持续更新（当前需手动 backfill）
+3. **Phase 3 — 情境聚合 + 推送**：Wyckoff FSM、日报生成、企微/飞书/Telegram
 
 > *"The market does not care about your indicators. It cares about liquidity."*
