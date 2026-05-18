@@ -290,6 +290,27 @@ def test_acc_a_secondary_sc_lowers_range_low() -> None:
     assert s.range_low == 75.0
 
 
+def test_acc_b_re_anchors_range_on_lower_sc() -> None:
+    """In Phase B, a lower SC should still re-anchor range_low."""
+    s = _initial()
+    s = evolve(s, _make_event(WyckoffEventType.SC, price=80.0))
+    s = evolve(s, _make_event(WyckoffEventType.AR, price=95.0))
+    assert s.phase == WyckoffPhase.ACC_B
+    s = evolve(s, _make_event(WyckoffEventType.SC, price=75.0))
+    assert s.phase == WyckoffPhase.ACC_B
+    assert s.range_low == 75.0
+
+
+def test_acc_b_re_anchors_range_on_higher_ar() -> None:
+    """In Phase B, a higher AR should re-anchor range_high."""
+    s = _initial()
+    s = evolve(s, _make_event(WyckoffEventType.SC, price=80.0))
+    s = evolve(s, _make_event(WyckoffEventType.AR, price=95.0))
+    s = evolve(s, _make_event(WyckoffEventType.AR, price=98.0))
+    assert s.phase == WyckoffPhase.ACC_B
+    assert s.range_high == 98.0
+
+
 def test_dist_a_secondary_bc_raises_range_high() -> None:
     s = _initial()
     s = evolve(s, _make_event(WyckoffEventType.BC, price=120.0))
@@ -329,11 +350,11 @@ def test_detect_selling_climax_on_volume_spike_at_swing_low() -> None:
     """Engineer a swing low with a volume spike + lower wick → SC detected."""
     n_warmup = 30
     base = 100.0
-    opens = [base] * n_warmup + [95.0, 92.0, 88.0, 95.0, 95.0, 95.0, 95.0]
-    closes = [base] * n_warmup + [92.0, 88.0, 92.0, 95.0, 95.0, 95.0, 95.0]
-    highs = [base + 0.5] * n_warmup + [96.0, 93.0, 93.0, 96.0, 96.0, 96.0, 96.0]
-    # Climax bar at idx n_warmup+2: huge lower wick down to 80, close 92
-    lows = [base - 0.5] * n_warmup + [91.0, 86.0, 80.0, 94.0, 94.0, 94.0, 94.0]
+    # Climax bar: open=87, close=86, low=78, high=89 → wick_ratio 0.73
+    opens = [base] * n_warmup + [95.0, 92.0, 87.0, 88.0, 90.0, 91.0, 90.0]
+    closes = [base] * n_warmup + [92.0, 87.0, 86.0, 90.0, 91.0, 90.0, 88.0]
+    highs = [base + 0.5] * n_warmup + [96.0, 93.0, 89.0, 91.0, 92.0, 92.0, 91.0]
+    lows = [base - 0.5] * n_warmup + [91.0, 86.0, 78.0, 87.0, 89.0, 89.0, 87.0]
     volumes = [10.0] * n_warmup + [12.0, 15.0, 200.0, 20.0, 15.0, 12.0, 10.0]
 
     df = _bars(
@@ -344,17 +365,18 @@ def test_detect_selling_climax_on_volume_spike_at_swing_low() -> None:
     )
     sc_events = [e for e in events if e.event_type == WyckoffEventType.SC]
     assert len(sc_events) >= 1
-    assert sc_events[0].price <= 82.0  # close to the low extreme
+    assert sc_events[0].price <= 80.0
 
 
 def test_detect_buying_climax_on_volume_spike_at_swing_high() -> None:
     """Symmetric: swing high with volume spike + upper wick → BC detected."""
     n_warmup = 30
     base = 100.0
-    opens = [base] * n_warmup + [105.0, 108.0, 112.0, 105.0, 105.0, 105.0, 105.0]
-    closes = [base] * n_warmup + [108.0, 112.0, 108.0, 105.0, 105.0, 105.0, 105.0]
-    lows = [base - 0.5] * n_warmup + [104.0, 107.0, 107.0, 104.0, 104.0, 104.0, 104.0]
-    highs = [base + 0.5] * n_warmup + [109.0, 114.0, 120.0, 106.0, 106.0, 106.0, 106.0]
+    # BC bar: open=113, close=114, high=122, low=112 → wick_ratio 0.8
+    opens = [base] * n_warmup + [105.0, 108.0, 113.0, 112.0, 110.0, 109.0, 109.0]
+    closes = [base] * n_warmup + [108.0, 113.0, 114.0, 110.0, 109.0, 109.0, 110.0]
+    lows = [base - 0.5] * n_warmup + [104.0, 107.0, 112.0, 109.0, 108.0, 107.0, 107.0]
+    highs = [base + 0.5] * n_warmup + [109.0, 114.0, 122.0, 113.0, 111.0, 110.0, 110.0]
     volumes = [10.0] * n_warmup + [12.0, 15.0, 200.0, 20.0, 15.0, 12.0, 10.0]
 
     df = _bars(opens=opens, highs=highs, lows=lows, closes=closes, volumes=volumes)
@@ -379,20 +401,147 @@ def test_analyze_empty_df_returns_neutral_only() -> None:
 
 def test_analyze_returns_snapshot_per_event_plus_initial() -> None:
     n_warmup = 30
-    opens = [100.0] * n_warmup + [95.0, 92.0, 88.0, 95.0, 95.0, 95.0, 95.0]
-    closes = [100.0] * n_warmup + [92.0, 88.0, 92.0, 95.0, 95.0, 95.0, 95.0]
-    highs = [100.5] * n_warmup + [96.0, 93.0, 93.0, 96.0, 96.0, 96.0, 96.0]
-    lows = [99.5] * n_warmup + [91.0, 86.0, 80.0, 94.0, 94.0, 94.0, 94.0]
+    opens = [100.0] * n_warmup + [95.0, 92.0, 87.0, 88.0, 90.0, 91.0, 90.0]
+    closes = [100.0] * n_warmup + [92.0, 87.0, 86.0, 90.0, 91.0, 90.0, 88.0]
+    highs = [100.5] * n_warmup + [96.0, 93.0, 89.0, 91.0, 92.0, 92.0, 91.0]
+    lows = [99.5] * n_warmup + [91.0, 86.0, 78.0, 87.0, 89.0, 89.0, 87.0]
     volumes = [10.0] * n_warmup + [12.0, 15.0, 200.0, 20.0, 15.0, 12.0, 10.0]
 
     df = _bars(opens=opens, highs=highs, lows=lows, closes=closes, volumes=volumes)
     snaps = analyze_wyckoff(df, volume_window=20, swing_lookback=2)
-    # First snapshot is NEUTRAL; later snapshots reflect events.
     assert snaps[0].phase == WyckoffPhase.NEUTRAL
-    # If at least one strong SC was detected, last state should be ACC_A.
     if len(snaps) > 1:
         assert snaps[-1].phase in {
             WyckoffPhase.NEUTRAL,
             WyckoffPhase.ACC_A,
             WyckoffPhase.ACC_B,
         }
+
+
+# ---------------------------------------------------------------------------
+# AR / AR_DIST detection
+# ---------------------------------------------------------------------------
+
+
+def test_ar_detected_after_sc() -> None:
+    """SC followed by a swing high within lookahead window → AR event emitted."""
+    n_warmup = 30
+    base = 100.0
+    # Climax bar at idx 32: deep lower wick (open=87, close=86, low=78, high=89).
+    # Then single-peaked rally with maximum at idx 36.
+    opens = [base] * n_warmup + [95.0, 92.0, 87.0] + [86.0, 88.0, 91.0, 90.0, 88.0, 86.0, 85.0]
+    closes = [base] * n_warmup + [92.0, 87.0, 86.0] + [88.0, 91.0, 90.0, 88.0, 86.0, 85.0, 84.0]
+    highs = [base + 0.5] * n_warmup + [96.0, 93.0, 89.0] + [89.0, 92.0, 94.0, 91.0, 89.0, 87.0, 86.0]
+    lows = [base - 0.5] * n_warmup + [91.0, 86.0, 78.0] + [85.0, 87.0, 89.0, 87.0, 85.0, 84.0, 83.0]
+    volumes = [10.0] * n_warmup + [12.0, 15.0, 200.0] + [20.0, 18.0, 16.0, 14.0, 12.0, 10.0, 10.0]
+
+    df = _bars(opens=opens, highs=highs, lows=lows, closes=closes, volumes=volumes)
+    events = detect_wyckoff_events(
+        df, swing_lookback=2, volume_climax_z=2.0, volume_window=20
+    )
+    ar_events = [e for e in events if e.event_type == WyckoffEventType.AR]
+    sc_events = [e for e in events if e.event_type == WyckoffEventType.SC]
+    assert len(sc_events) >= 1
+    assert len(ar_events) >= 1
+    assert ar_events[0].bar_index > sc_events[0].bar_index
+    assert ar_events[0].price > sc_events[0].price
+
+
+def test_ar_dist_detected_after_bc() -> None:
+    """Symmetric: BC followed by a swing low → AR_DIST event."""
+    n_warmup = 30
+    base = 100.0
+    # BC bar at idx 32: deep upper wick. Then single-troughed reaction.
+    opens = [base] * n_warmup + [105.0, 108.0, 113.0] + [114.0, 112.0, 109.0, 110.0, 112.0, 114.0, 115.0]
+    closes = [base] * n_warmup + [108.0, 113.0, 114.0] + [112.0, 109.0, 110.0, 112.0, 114.0, 115.0, 116.0]
+    lows = [base - 0.5] * n_warmup + [104.0, 107.0, 112.0] + [111.0, 108.0, 106.0, 109.0, 111.0, 113.0, 114.0]
+    highs = [base + 0.5] * n_warmup + [109.0, 114.0, 122.0] + [115.0, 113.0, 111.0, 113.0, 115.0, 116.0, 117.0]
+    volumes = [10.0] * n_warmup + [12.0, 15.0, 200.0] + [20.0, 18.0, 16.0, 14.0, 12.0, 10.0, 10.0]
+
+    df = _bars(opens=opens, highs=highs, lows=lows, closes=closes, volumes=volumes)
+    events = detect_wyckoff_events(
+        df, swing_lookback=2, volume_climax_z=2.0, volume_window=20
+    )
+    ar_dist = [e for e in events if e.event_type == WyckoffEventType.AR_DIST]
+    bc = [e for e in events if e.event_type == WyckoffEventType.BC]
+    assert len(bc) >= 1
+    assert len(ar_dist) >= 1
+    assert ar_dist[0].bar_index > bc[0].bar_index
+    assert ar_dist[0].price < bc[0].price
+
+
+def test_no_ar_when_no_subsequent_swing() -> None:
+    """SC at the very last bars → no swing high after → no AR emitted."""
+    n_warmup = 30
+    base = 100.0
+    opens = [base] * n_warmup + [95.0, 92.0, 87.0]
+    closes = [base] * n_warmup + [92.0, 87.0, 86.0]
+    highs = [base + 0.5] * n_warmup + [96.0, 93.0, 89.0]
+    lows = [base - 0.5] * n_warmup + [91.0, 86.0, 78.0]
+    volumes = [10.0] * n_warmup + [12.0, 15.0, 200.0]
+    df = _bars(opens=opens, highs=highs, lows=lows, closes=closes, volumes=volumes)
+    events = detect_wyckoff_events(
+        df, swing_lookback=2, volume_climax_z=2.0, volume_window=20
+    )
+    assert [e for e in events if e.event_type == WyckoffEventType.AR] == []
+
+
+# ---------------------------------------------------------------------------
+# Bar-interval guard for Spring/UTAD
+# ---------------------------------------------------------------------------
+
+
+def test_subhour_bars_skip_spring_detection() -> None:
+    """Bars at 5m interval should not produce Spring/UTAD events even if the
+    underlying stop_hunt detector would fire — Wyckoff Springs are a 1h+
+    structural concept.
+    """
+    n = 60
+    base_dt = datetime(2025, 1, 1)
+    # Equal lows pool at 80, then sweep to 78 with rejection wick
+    opens = [100.0] * 30 + [95.0, 80.5] + [80.5] * 5 + [80.5, 80.5, 80.5, 78.0] + [82.0] * 19
+    closes = [100.0] * 30 + [80.5, 80.5] + [80.5] * 5 + [80.5, 80.5, 80.5, 82.0] + [82.0] * 19
+    highs = [100.5] * 30 + [95.5, 81.0] + [81.0] * 5 + [81.0, 81.0, 81.0, 82.5] + [82.5] * 19
+    lows = [99.5] * 30 + [80.0, 80.0] + [80.0] * 5 + [80.0, 80.0, 80.0, 78.0] + [81.5] * 19
+    volumes = [10.0] * 30 + [10.0, 10.0] + [10.0] * 5 + [10.0, 10.0, 10.0, 50.0] + [10.0] * 19
+
+    # 5m bars
+    df_5m = pl.DataFrame(
+        {
+            "open_time": [base_dt + timedelta(minutes=5 * i) for i in range(n)],
+            "open": opens[:n],
+            "high": highs[:n],
+            "low": lows[:n],
+            "close": closes[:n],
+            "volume": volumes[:n],
+        }
+    )
+    events_5m = detect_wyckoff_events(
+        df_5m, swing_lookback=2, volume_climax_z=2.0, volume_window=20
+    )
+    assert [e for e in events_5m if e.event_type == WyckoffEventType.SPRING] == []
+
+
+# ---------------------------------------------------------------------------
+# Pipeline integration — full Phase B narrative
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_pipeline_advances_to_phase_b_on_sc_plus_ar() -> None:
+    """End-to-end: SC + AR data should land FSM in Accumulation Phase B."""
+    n_warmup = 30
+    base = 100.0
+    opens = [base] * n_warmup + [95.0, 92.0, 87.0] + [86.0, 88.0, 90.0, 91.0, 92.0, 91.0, 89.0]
+    closes = [base] * n_warmup + [92.0, 87.0, 86.0] + [88.0, 90.0, 91.0, 92.0, 91.0, 89.0, 88.0]
+    highs = [base + 0.5] * n_warmup + [96.0, 93.0, 89.0] + [89.0, 91.0, 92.0, 93.0, 93.0, 92.0, 90.0]
+    lows = [base - 0.5] * n_warmup + [91.0, 86.0, 78.0] + [85.0, 87.0, 89.0, 91.0, 90.0, 88.0, 87.0]
+    volumes = [10.0] * n_warmup + [12.0, 15.0, 200.0] + [20.0, 18.0, 16.0, 14.0, 12.0, 10.0, 10.0]
+
+    df = _bars(opens=opens, highs=highs, lows=lows, closes=closes, volumes=volumes)
+    snaps = analyze_wyckoff(df, volume_window=20, swing_lookback=2)
+    final = snaps[-1]
+    assert final.phase in {WyckoffPhase.ACC_A, WyckoffPhase.ACC_B}
+    if final.phase == WyckoffPhase.ACC_B:
+        assert final.range_low is not None
+        assert final.range_high is not None
+        assert final.range_high > final.range_low

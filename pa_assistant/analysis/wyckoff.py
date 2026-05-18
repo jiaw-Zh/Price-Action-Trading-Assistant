@@ -47,7 +47,7 @@ was, with an audit trail in the snapshot's event chain.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Literal
 
@@ -55,7 +55,7 @@ import polars as pl
 
 from pa_assistant.analysis.divergence import DivergenceEvent
 from pa_assistant.analysis.liquidity import detect_liquidity_levels
-from pa_assistant.analysis.stop_hunt import detect_stop_hunts
+from pa_assistant.analysis.stop_hunt import StopHunt, detect_stop_hunts
 from pa_assistant.analysis.structure import detect_swings
 
 # ---------------------------------------------------------------------------
@@ -185,6 +185,11 @@ class WyckoffSnapshot:
 # Event detection
 # ---------------------------------------------------------------------------
 
+# Stop hunts on bars below this interval are too noisy to be meaningful
+# Wyckoff events. Wyckoff Springs / UTADs are macro-structural — minute-level
+# wick noise produces false positives.
+MIN_BAR_SECONDS_FOR_STOP_HUNTS = 3600  # 1 hour
+
 
 def detect_wyckoff_events(
     df: pl.DataFrame,
@@ -193,38 +198,50 @@ def detect_wyckoff_events(
     volume_climax_z: float = 2.0,
     volume_window: int = 20,
     eq_tolerance_bps: float = 10.0,
+    ar_lookahead_bars: int = 30,
+    ar_min_rally_pct: float = 0.005,
+    st_max_lookahead_bars: int = 60,
+    st_tolerance_pct: float = 0.01,
+    sos_volume_z: float = 1.5,
+    sos_body_ratio: float = 0.5,
+    sos_lookahead_bars: int = 30,
+    lps_lookahead_bars: int = 20,
+    lps_tolerance_pct: float = 0.005,
     divergences: list[DivergenceEvent] | None = None,
 ) -> list[WyckoffEvent]:
     """Detect Wyckoff vocabulary events from an OHLCV-with-extras DataFrame.
 
     The input must contain ``open_time``, ``open``, ``high``, ``low``,
-    ``close``, ``volume``. Optional columns enrich confluence scoring:
-    ``cvd`` and ``oi``.
+    ``close``, ``volume``. Optional ``cvd`` / ``oi`` columns combined with
+    ``divergences=`` enrich confluence scoring.
 
-    Parameters
-    ----------
-    df:
-        Resampled OHLCV with optional indicator columns.
-    swing_lookback:
-        Forwarded to :func:`detect_swings`. Default 3 — slightly stricter
-        than the standard fractal because Wyckoff cares about meaningful
-        pivots only.
-    volume_climax_z:
-        Minimum z-score (over ``volume_window`` rolling mean+std) for a
-        bar's volume to qualify as a climax. Default 2.0 = roughly the
-        top 2.5% of bars by relative volume.
-    volume_window:
-        Rolling window for volume z-score baseline.
-    eq_tolerance_bps:
-        Tolerance for liquidity pool clustering, forwarded to
-        :func:`detect_liquidity_levels`.
-    divergences:
-        Optional pre-computed divergence list. If given, presence at a
-        candidate event boosts that event's confluence score.
+    Detection passes
+    ----------------
+    1. **Climaxes** (SC, BC) — bars with volume z-score >= ``volume_climax_z``
+       at a swing extreme with rejection wick >= 40%.
+    2. **Springs / UTADs** — confirmed liquidity-pool sweeps (from
+       :func:`detect_stop_hunts`). **Skipped** when the input timeframe
+       is below 1 hour (sub-hourly stop hunts are too noisy to mean
+       anything Wyckoff-wise).
+    3. **AR / AR_DIST** — for each climax, the first significant swing in
+       the opposite direction within ``ar_lookahead_bars``. Together SC+AR
+       define the initial trading range.
+    4. **ST / ST_DIST** — swing extremes inside the established range that
+       approach the climax price (within ``st_tolerance_pct``) on
+       diminishing volume — Wyckoff's "test" of supply / demand.
+    5. **SOS / SOW** — after a Spring (or UTAD), a breakout bar whose
+       close clears the range edge with volume z-score >= ``sos_volume_z``
+       and body ratio >= ``sos_body_ratio``.
+    6. **LPS / LPSY** — after SOS / SOW, a swing that holds above (below)
+       the former range edge, now flipped to support (resistance).
 
-    Returns
-    -------
-    A timestamp-sorted list of :class:`WyckoffEvent`.
+    Stop-hunt timeframe guard
+    -------------------------
+    The detector inspects the median bar interval of ``df`` and skips
+    Spring/UTAD detection when it is below 1 hour. Wyckoff Springs are
+    macro-structural events; sub-hourly wick noise produces false
+    positives that pollute the FSM. For Springs to be detected, run on
+    a 1h+ resampled DataFrame.
     """
     required = {"open_time", "open", "high", "low", "close", "volume"}
     missing = required - set(df.columns)
@@ -235,117 +252,104 @@ def detect_wyckoff_events(
         return []
 
     annotated = detect_swings(df, lookback=swing_lookback)
-
-    # Volume z-score column
     annotated = annotated.with_columns(
         (
             (pl.col("volume") - pl.col("volume").rolling_mean(volume_window))
             / pl.col("volume").rolling_std(volume_window)
         ).alias("_vol_z"),
     )
-
     rows = annotated.to_dicts()
 
-    # Build a divergence index: bar_index -> list of divergence events at that bar.
     div_by_ts: dict[datetime, list[DivergenceEvent]] = {}
     if divergences:
         for d in divergences:
             div_by_ts.setdefault(d.timestamp, []).append(d)
 
-    # Liquidity pools — used for Spring / UTAD confluence
-    levels = detect_liquidity_levels(df, tolerance_bps=eq_tolerance_bps)
-    stop_hunts = detect_stop_hunts(df, levels)
-
     events: list[WyckoffEvent] = []
 
-    # Climaxes: find bars with extreme volume z-score AT a swing extreme
-    # with rejection wick.
-    for i, row in enumerate(rows):
-        vol_z = row.get("_vol_z")
-        if vol_z is None or vol_z < volume_climax_z:
-            continue
+    # --- Pass 1: climaxes ---------------------------------------------------
+    climaxes = _detect_climaxes(rows, volume_climax_z, div_by_ts)
+    events.extend(climaxes)
 
-        bar_range = float(row["high"]) - float(row["low"])
-        if bar_range <= 0:
-            continue
-        ts = row["open_time"]
-        close = float(row["close"])
+    # --- Pass 2: Springs / UTADs (1h+ only) ---------------------------------
+    if _bar_interval_seconds(df) >= MIN_BAR_SECONDS_FOR_STOP_HUNTS:
+        levels = detect_liquidity_levels(df, tolerance_bps=eq_tolerance_bps)
+        stop_hunts = detect_stop_hunts(df, levels)
+        events.extend(_to_spring_utad_events(stop_hunts, rows, div_by_ts))
 
-        # Selling Climax: swing low + lower wick rejection + extreme volume
-        if row.get("swing_low") is not None:
-            lower_wick = min(float(row["open"]), close) - float(row["low"])
-            wick_ratio = lower_wick / bar_range
-            if wick_ratio >= 0.4:
-                conf = {
-                    "volume_climax": min(float(vol_z) / volume_climax_z / 2.0, 1.0),
-                    "wick_rejection": wick_ratio,
-                }
-                if any(d.side == "bullish" for d in div_by_ts.get(ts, [])):
-                    conf["bullish_divergence"] = 0.8
-                events.append(
-                    WyckoffEvent(
-                        timestamp=ts,
-                        event_type=WyckoffEventType.SC,
-                        bar_index=i,
-                        price=float(row["low"]),
-                        confluence=conf,
-                    )
-                )
+    # --- Pass 3: AR/AR_DIST per climax --------------------------------------
+    ar_events: list[WyckoffEvent] = []
+    for c in climaxes:
+        ar = _find_automatic_rally(
+            rows,
+            c,
+            lookahead_bars=ar_lookahead_bars,
+            min_pct=ar_min_rally_pct,
+        )
+        if ar is not None:
+            ar_events.append(ar)
+    events.extend(ar_events)
 
-        # Buying Climax: swing high + upper wick + extreme volume
-        if row.get("swing_high") is not None:
-            upper_wick = float(row["high"]) - max(float(row["open"]), close)
-            wick_ratio = upper_wick / bar_range
-            if wick_ratio >= 0.4:
-                conf = {
-                    "volume_climax": min(float(vol_z) / volume_climax_z / 2.0, 1.0),
-                    "wick_rejection": wick_ratio,
-                }
-                if any(d.side == "bearish" for d in div_by_ts.get(ts, [])):
-                    conf["bearish_divergence"] = 0.8
-                events.append(
-                    WyckoffEvent(
-                        timestamp=ts,
-                        event_type=WyckoffEventType.BC,
-                        bar_index=i,
-                        price=float(row["high"]),
-                        confluence=conf,
-                    )
-                )
-
-    # Springs / UTADs come from stop hunts. A Spring is a stop hunt below an
-    # equal-low pool that closed back inside; UTAD is the symmetric sweep
-    # above an equal-high pool.
-    for hunt in stop_hunts:
-        if not hunt.confirmed:
+    # --- Pass 4: ST/ST_DIST inside each established range -------------------
+    for c in climaxes:
+        ar = _find_ar_for_climax(c, ar_events)
+        if ar is None:
             continue
-        ts = hunt.timestamp
-        bar_idx = next((i for i, r in enumerate(rows) if r["open_time"] == ts), -1)
-        if bar_idx < 0:
-            continue
-        conf = {
-            "wick_rejection": hunt.wick_ratio,
-            "volume_ratio": min(hunt.volume_ratio / 2.0, 1.0),
-            "pool_quality": min(hunt.pool_touches / 4.0, 1.0),
-            "confirmed_reversal": 1.0,
-        }
-        if hunt.side == "low":
-            event_type = WyckoffEventType.SPRING
-            if any(d.side == "bullish" for d in div_by_ts.get(ts, [])):
-                conf["bullish_divergence"] = 0.8
-        else:
-            event_type = WyckoffEventType.UTAD
-            if any(d.side == "bearish" for d in div_by_ts.get(ts, [])):
-                conf["bearish_divergence"] = 0.8
-        events.append(
-            WyckoffEvent(
-                timestamp=ts,
-                event_type=event_type,
-                bar_index=bar_idx,
-                price=hunt.extreme,
-                confluence=conf,
+        events.extend(
+            _find_secondary_tests(
+                rows,
+                climax=c,
+                ar=ar,
+                max_bars=st_max_lookahead_bars,
+                tolerance_pct=st_tolerance_pct,
             )
         )
+
+    # --- Pass 5: SOS / SOW after Spring / UTAD ------------------------------
+    sos_events: list[WyckoffEvent] = []
+    spring_or_utad_events = [
+        e
+        for e in events
+        if e.event_type in {WyckoffEventType.SPRING, WyckoffEventType.UTAD}
+    ]
+    for s in spring_or_utad_events:
+        # Use the most recent AR (same side) before this Spring/UTAD as the
+        # range edge to break.
+        side: Side = (
+            "accumulation" if s.event_type == WyckoffEventType.SPRING else "distribution"
+        )
+        edge = _find_range_edge_for(s, ar_events, side=side)
+        if edge is None:
+            continue
+        sos = _find_sos_after(
+            rows,
+            anchor=s,
+            range_edge=edge,
+            side=side,
+            volume_z=sos_volume_z,
+            body_ratio_min=sos_body_ratio,
+            lookahead_bars=sos_lookahead_bars,
+        )
+        if sos is not None:
+            sos_events.append(sos)
+    events.extend(sos_events)
+
+    # --- Pass 6: LPS / LPSY after SOS / SOW ---------------------------------
+    for sos in sos_events:
+        side = "accumulation" if sos.event_type == WyckoffEventType.SOS else "distribution"
+        edge = _find_range_edge_for(sos, ar_events, side=side)
+        if edge is None:
+            continue
+        lps = _find_lps_after(
+            rows,
+            anchor=sos,
+            range_edge=edge,
+            side=side,
+            lookahead_bars=lps_lookahead_bars,
+            tolerance_pct=lps_tolerance_pct,
+        )
+        if lps is not None:
+            events.append(lps)
 
     events.sort(key=lambda e: (e.timestamp, e.event_type.value))
     return events
@@ -483,6 +487,11 @@ def _evolve_accumulation(
                 events=new_events,
                 confidence=min((state.confidence + conf) / 2 + 0.1, 1.0),
             )
+        # Range re-anchoring inside Phase B
+        if et == WyckoffEventType.SC and event.price < (state.range_low or float("inf")):
+            return replace(state, range_low=event.price, events=new_events)
+        if et == WyckoffEventType.AR and event.price > (state.range_high or float("-inf")):
+            return replace(state, range_high=event.price, events=new_events)
         return replace(state, events=new_events)
 
     if state.phase == WyckoffPhase.ACC_C:
@@ -549,6 +558,11 @@ def _evolve_distribution(
                 events=new_events,
                 confidence=min((state.confidence + conf) / 2 + 0.1, 1.0),
             )
+        # Range re-anchoring inside Phase B
+        if et == WyckoffEventType.BC and event.price > (state.range_high or float("-inf")):
+            return replace(state, range_high=event.price, events=new_events)
+        if et == WyckoffEventType.AR_DIST and event.price < (state.range_low or float("inf")):
+            return replace(state, range_low=event.price, events=new_events)
         return replace(state, events=new_events)
 
     if state.phase == WyckoffPhase.DIST_C:
@@ -624,3 +638,411 @@ def _initial_snapshot(ts: datetime) -> WyckoffSnapshot:
         events=(),
         confidence=0.0,
     )
+
+
+# ---------------------------------------------------------------------------
+# Detection helpers
+# ---------------------------------------------------------------------------
+
+
+def _bar_interval_seconds(df: pl.DataFrame) -> int:
+    """Median bar interval in seconds. ``0`` if undeterminable."""
+    if df.height < 2:
+        return 0
+    deltas = df.get_column("open_time").diff().drop_nulls()
+    if deltas.is_empty():
+        return 0
+    median_delta = deltas.median()
+    if median_delta is None or not isinstance(median_delta, timedelta):
+        return 0
+    return int(median_delta.total_seconds())
+
+
+def _f(row: dict[str, object], key: str) -> float:
+    """Extract a float from a row dict (silences mypy on Polars' object typing)."""
+    return float(row[key])  # type: ignore[arg-type]
+
+
+def _detect_climaxes(
+    rows: list[dict[str, object]],
+    volume_climax_z: float,
+    div_by_ts: dict[datetime, list[DivergenceEvent]],
+) -> list[WyckoffEvent]:
+    """Pass 1: Selling/Buying climaxes (swing extreme + volume + rejection wick)."""
+    events: list[WyckoffEvent] = []
+    for i, row in enumerate(rows):
+        vol_z = row.get("_vol_z")
+        if vol_z is None or float(vol_z) < volume_climax_z:  # type: ignore[arg-type]
+            continue
+        high_v = _f(row, "high")
+        low_v = _f(row, "low")
+        bar_range = high_v - low_v
+        if bar_range <= 0:
+            continue
+        ts = row["open_time"]
+        assert isinstance(ts, datetime)
+        open_v = _f(row, "open")
+        close_v = _f(row, "close")
+
+        if row.get("swing_low") is not None:
+            lower_wick = min(open_v, close_v) - low_v
+            wick_ratio = lower_wick / bar_range
+            if wick_ratio >= 0.4:
+                conf = {
+                    "volume_climax": min(float(vol_z) / volume_climax_z / 2.0, 1.0),  # type: ignore[arg-type]
+                    "wick_rejection": wick_ratio,
+                }
+                if any(d.side == "bullish" for d in div_by_ts.get(ts, [])):
+                    conf["bullish_divergence"] = 0.8
+                events.append(
+                    WyckoffEvent(
+                        timestamp=ts,
+                        event_type=WyckoffEventType.SC,
+                        bar_index=i,
+                        price=low_v,
+                        confluence=conf,
+                    )
+                )
+
+        if row.get("swing_high") is not None:
+            upper_wick = high_v - max(open_v, close_v)
+            wick_ratio = upper_wick / bar_range
+            if wick_ratio >= 0.4:
+                conf = {
+                    "volume_climax": min(float(vol_z) / volume_climax_z / 2.0, 1.0),  # type: ignore[arg-type]
+                    "wick_rejection": wick_ratio,
+                }
+                if any(d.side == "bearish" for d in div_by_ts.get(ts, [])):
+                    conf["bearish_divergence"] = 0.8
+                events.append(
+                    WyckoffEvent(
+                        timestamp=ts,
+                        event_type=WyckoffEventType.BC,
+                        bar_index=i,
+                        price=high_v,
+                        confluence=conf,
+                    )
+                )
+    return events
+
+
+def _to_spring_utad_events(
+    stop_hunts: list[StopHunt],
+    rows: list[dict[str, object]],
+    div_by_ts: dict[datetime, list[DivergenceEvent]],
+) -> list[WyckoffEvent]:
+    """Pass 2: confirmed stop hunts -> Springs (low side) / UTADs (high side)."""
+    events: list[WyckoffEvent] = []
+    for hunt in stop_hunts:
+        if not hunt.confirmed:
+            continue
+        bar_idx = next(
+            (i for i, r in enumerate(rows) if r["open_time"] == hunt.timestamp), -1
+        )
+        if bar_idx < 0:
+            continue
+        conf = {
+            "wick_rejection": hunt.wick_ratio,
+            "volume_ratio": min(hunt.volume_ratio / 2.0, 1.0),
+            "pool_quality": min(hunt.pool_touches / 4.0, 1.0),
+            "confirmed_reversal": 1.0,
+        }
+        if hunt.side == "low":
+            et = WyckoffEventType.SPRING
+            if any(d.side == "bullish" for d in div_by_ts.get(hunt.timestamp, [])):
+                conf["bullish_divergence"] = 0.8
+        else:
+            et = WyckoffEventType.UTAD
+            if any(d.side == "bearish" for d in div_by_ts.get(hunt.timestamp, [])):
+                conf["bearish_divergence"] = 0.8
+        events.append(
+            WyckoffEvent(
+                timestamp=hunt.timestamp,
+                event_type=et,
+                bar_index=bar_idx,
+                price=hunt.extreme,
+                confluence=conf,
+            )
+        )
+    return events
+
+
+def _find_automatic_rally(
+    rows: list[dict[str, object]],
+    climax: WyckoffEvent,
+    *,
+    lookahead_bars: int,
+    min_pct: float,
+) -> WyckoffEvent | None:
+    """Pass 3: For an SC, find the highest swing high in the next N bars.
+
+    For a BC, find the lowest swing low. Generates AR (accumulation) or
+    AR_DIST (distribution).
+    """
+    start = climax.bar_index + 1
+    end = min(start + lookahead_bars, len(rows))
+    if start >= end:
+        return None
+
+    if climax.event_type == WyckoffEventType.SC:
+        swing_col = "swing_high"
+        seed = float("-inf")
+        target_et = WyckoffEventType.AR
+        accumulating = True
+    else:
+        swing_col = "swing_low"
+        seed = float("inf")
+        target_et = WyckoffEventType.AR_DIST
+        accumulating = False
+
+    best_idx = -1
+    best_price = seed
+    for i in range(start, end):
+        sw = rows[i].get(swing_col)
+        if sw is None:
+            continue
+        sw_f = float(sw)  # type: ignore[arg-type]
+        rally_pct = abs(sw_f - climax.price) / climax.price
+        if rally_pct < min_pct:
+            continue
+        if accumulating:
+            if sw_f > best_price:
+                best_price = sw_f
+                best_idx = i
+        else:
+            if sw_f < best_price:
+                best_price = sw_f
+                best_idx = i
+
+    if best_idx < 0:
+        return None
+
+    rally_pct = abs(best_price - climax.price) / climax.price
+    distance = best_idx - climax.bar_index
+    conf = {
+        "rally_magnitude": min(rally_pct / 0.05, 1.0),
+        "promptness": max(0.0, 1.0 - distance / lookahead_bars),
+        "structural_pivot": 0.7,
+    }
+    ts = rows[best_idx]["open_time"]
+    assert isinstance(ts, datetime)
+    return WyckoffEvent(
+        timestamp=ts,
+        event_type=target_et,
+        bar_index=best_idx,
+        price=best_price,
+        confluence=conf,
+    )
+
+
+def _find_ar_for_climax(
+    climax: WyckoffEvent, ar_events: list[WyckoffEvent]
+) -> WyckoffEvent | None:
+    """Find the AR event that immediately follows a given climax."""
+    target_et = (
+        WyckoffEventType.AR
+        if climax.event_type == WyckoffEventType.SC
+        else WyckoffEventType.AR_DIST
+    )
+    candidates = [
+        ar for ar in ar_events if ar.event_type == target_et and ar.bar_index > climax.bar_index
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda ar: ar.bar_index)
+
+
+def _find_secondary_tests(
+    rows: list[dict[str, object]],
+    *,
+    climax: WyckoffEvent,
+    ar: WyckoffEvent,
+    max_bars: int,
+    tolerance_pct: float,
+) -> list[WyckoffEvent]:
+    """Pass 4: STs inside the [climax, AR] range that retest the climax price.
+
+    A valid ST has:
+      - swing extreme within ``tolerance_pct`` of the climax price
+      - lower volume z-score than the climax (Wyckoff "diminishing supply/demand")
+    """
+    start = ar.bar_index + 1
+    end = min(start + max_bars, len(rows))
+    if start >= end:
+        return []
+
+    climax_vol_z_norm = climax.confluence.get("volume_climax", 0.0)
+    is_acc = climax.event_type == WyckoffEventType.SC
+    swing_col = "swing_low" if is_acc else "swing_high"
+    target_et = WyckoffEventType.ST if is_acc else WyckoffEventType.ST_DIST
+
+    events: list[WyckoffEvent] = []
+    for i in range(start, end):
+        row = rows[i]
+        sw = row.get(swing_col)
+        if sw is None:
+            continue
+        sw_f = float(sw)  # type: ignore[arg-type]
+        diff_pct = abs(sw_f - climax.price) / climax.price
+        if diff_pct > tolerance_pct:
+            continue
+        vol_z = row.get("_vol_z")
+        vol_z_f = float(vol_z) if vol_z is not None else 0.0  # type: ignore[arg-type]
+        # ST should have notably lower volume than climax
+        normalized_vol = min(max(vol_z_f, 0.0) / 4.0, 1.0)
+        if normalized_vol >= climax_vol_z_norm * 0.8:
+            continue
+        ts = row["open_time"]
+        assert isinstance(ts, datetime)
+        conf = {
+            "test_proximity": 1.0 - min(diff_pct / tolerance_pct, 1.0),
+            "volume_diminishment": 1.0 - normalized_vol,
+            "structural_pivot": 0.6,
+        }
+        events.append(
+            WyckoffEvent(
+                timestamp=ts,
+                event_type=target_et,
+                bar_index=i,
+                price=sw_f,
+                confluence=conf,
+            )
+        )
+    return events
+
+
+def _find_range_edge_for(
+    anchor: WyckoffEvent,
+    ar_events: list[WyckoffEvent],
+    *,
+    side: Side,
+) -> float | None:
+    """Find the most recent AR (accumulation) / AR_DIST (distribution) before
+    ``anchor``. Returns its price — the edge that SOS / SOW must clear.
+    """
+    target_et = WyckoffEventType.AR if side == "accumulation" else WyckoffEventType.AR_DIST
+    candidates = [
+        ar
+        for ar in ar_events
+        if ar.event_type == target_et and ar.bar_index < anchor.bar_index
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda ar: ar.bar_index).price
+
+
+def _find_sos_after(
+    rows: list[dict[str, object]],
+    *,
+    anchor: WyckoffEvent,
+    range_edge: float,
+    side: Side,
+    volume_z: float,
+    body_ratio_min: float,
+    lookahead_bars: int,
+) -> WyckoffEvent | None:
+    """Pass 5: After Spring/UTAD, find first bar that breaks ``range_edge``
+    with strong volume + dominant body. Generates SOS / SOW.
+    """
+    start = anchor.bar_index + 1
+    end = min(start + lookahead_bars, len(rows))
+    if start >= end:
+        return None
+
+    target_et = WyckoffEventType.SOS if side == "accumulation" else WyckoffEventType.SOW
+
+    for i in range(start, end):
+        row = rows[i]
+        close_v = _f(row, "close")
+        open_v = _f(row, "open")
+        high_v = _f(row, "high")
+        low_v = _f(row, "low")
+
+        if side == "accumulation" and close_v <= range_edge:
+            continue
+        if side == "distribution" and close_v >= range_edge:
+            continue
+
+        bar_range = high_v - low_v
+        if bar_range == 0:
+            continue
+        body_ratio = abs(close_v - open_v) / bar_range
+        if body_ratio < body_ratio_min:
+            continue
+        vol_z = row.get("_vol_z")
+        if vol_z is None or float(vol_z) < volume_z:  # type: ignore[arg-type]
+            continue
+
+        breakout_pct = abs(close_v - range_edge) / range_edge
+        ts = row["open_time"]
+        assert isinstance(ts, datetime)
+        conf = {
+            "volume_strength": min(float(vol_z) / volume_z / 2.0, 1.0),  # type: ignore[arg-type]
+            "body_dominance": body_ratio,
+            "breakout_magnitude": min(breakout_pct / 0.02, 1.0),
+        }
+        return WyckoffEvent(
+            timestamp=ts,
+            event_type=target_et,
+            bar_index=i,
+            price=close_v,
+            confluence=conf,
+        )
+    return None
+
+
+def _find_lps_after(
+    rows: list[dict[str, object]],
+    *,
+    anchor: WyckoffEvent,
+    range_edge: float,
+    side: Side,
+    lookahead_bars: int,
+    tolerance_pct: float,
+) -> WyckoffEvent | None:
+    """Pass 6: After SOS/SOW, find swing that holds at the former range edge
+    (now flipped to support / resistance). Generates LPS / LPSY.
+    """
+    start = anchor.bar_index + 1
+    end = min(start + lookahead_bars, len(rows))
+    if start >= end:
+        return None
+
+    is_acc = side == "accumulation"
+    swing_col = "swing_low" if is_acc else "swing_high"
+    target_et = WyckoffEventType.LPS if is_acc else WyckoffEventType.LPSY
+
+    # Tolerance: LPS may dip slightly below the former range_high (now
+    # support); it just shouldn't break far below it.
+    threshold = range_edge * (1 - tolerance_pct) if is_acc else range_edge * (1 + tolerance_pct)
+
+    for i in range(start, end):
+        row = rows[i]
+        sw = row.get(swing_col)
+        if sw is None:
+            continue
+        sw_f = float(sw)  # type: ignore[arg-type]
+        # Hold check: for accumulation, swing low should not break too far
+        # below the former range_high. For distribution, swing high should
+        # not break too far above former range_low.
+        if is_acc and sw_f < threshold:
+            return None  # Failed hold — invalidation, not LPS
+        if not is_acc and sw_f > threshold:
+            return None
+        # Distance from edge measures "support cleanliness"
+        edge_distance_pct = abs(sw_f - range_edge) / range_edge
+        ts = row["open_time"]
+        assert isinstance(ts, datetime)
+        conf = {
+            "support_hold" if is_acc else "resistance_hold": 0.85,
+            "structure_higher_low" if is_acc else "structure_lower_high": 0.7,
+            "edge_proximity": max(0.0, 1.0 - edge_distance_pct / 0.02),
+        }
+        return WyckoffEvent(
+            timestamp=ts,
+            event_type=target_et,
+            bar_index=i,
+            price=sw_f,
+            confluence=conf,
+        )
+    return None
