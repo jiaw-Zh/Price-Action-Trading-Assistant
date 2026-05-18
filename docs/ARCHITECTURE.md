@@ -336,42 +336,43 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 
 时间估算基于**单人兼职开发**，全职可显著压缩。
 
-### **Phase 0 — 基础设施（第 1 周）**
-- 项目骨架（`uv` + `pyproject.toml` + `ruff` + `mypy` + `pytest`）
-- 配置管理（`pydantic-settings`，环境变量 + `.env`）
-- 日志系统（`structlog`）
-- DuckDB 初始化 + 表结构
-- Binance WebSocket 接入：K 线 + Trades + 爆仓流
-- Binance REST：历史 K 线补齐 + OI 轮询
-- Coinglass REST 接入 + 自聚合降级方案
-- 数据完整性校验
+### **Phase 0 — 基础设施（已完成 ✅）**
+- ✅ 项目骨架（`uv` + `pyproject.toml` + `ruff` + `mypy strict` + `pytest`）
+- ✅ 配置管理（`pydantic-settings`，环境变量 + `.env`）
+- ✅ 日志系统（`structlog`）
+- ✅ DuckDB 初始化 + 表结构
+- ✅ Binance REST：历史 K 线补齐 + OI 轮询
+- ✅ **5 源自聚合资金费率**（Binance + OKX + Bybit + Bitget + Gate.io，OI 加权）
+- ✅ HTTP/SOCKS 代理支持（应对 CDN 区域封锁）
+- ⏳ Binance WebSocket（K 线 / Trades / 爆仓流）— 推迟，REST 轮询暂时够用
+- ⏳ 数据完整性校验（漏单检测）— 推迟到 WebSocket 接入后
 
-### **Phase 1 — 核心分析引擎（第 2-4 周）**
-- Swing 检测 + BOS/CHoCH
-- CVD / Delta / Volume Profile / VWAP（Polars 实现）
-- Order Block / FVG 标注
-- 简易 Web 图表（FastAPI + Lightweight Charts）+ 标注叠加
+### **Phase 1 — 核心分析引擎（3/4 切片完成 ✅）**
+- ✅ **切片 1**：1m → 任意 TF Polars 重采样；分形 swing；BOS/CHoCH 状态机
+- ✅ **切片 2**：Per-bar Delta + 累计 CVD；VWAP + σ 通道；Volume Profile (POC/VAH/VAL)
+- ✅ **切片 3**：Order Block（依赖结构事件）+ Fair Value Gap（纯几何）+ mitigation 跟踪
+- ⏭️ **切片 4**（Web 图表叠加）— 暂跳过，CLI 报告已能读
 
-### **Phase 2 — 流动性引擎（第 5-6 周）** ⭐
+### **Phase 2 — 流动性引擎（下一阶段）** ⭐
 - Equal Highs/Lows 识别
-- Stop Hunt 检测算法（结合 Trades 数据）
+- Stop Hunt 检测算法（结合 K 线 wick + 量价确认）
 - 爆仓热力图
 - 量价背离检测（多周期）
 
-### **Phase 3 — 上下文聚合 + 告警（第 7-8 周）**
+### **Phase 3 — 上下文聚合 + 告警 + 推送**
 - Wyckoff 阶段状态机
-- 情境报告生成器
-- Telegram 推送
+- 情境报告生成器（每日/按需）
 - 告警规则 DSL（YAML 配置，用户可自定义组合条件）
+- 推送渠道抽象 + 实现：Telegram / 企业微信 / 飞书
 
-### **Phase 4 — 复盘与回测（第 9-10 周）**
-- K 线回放系统（前端拖拽时间轴）
+### **Phase 4 — 复盘与回测**
+- K 线回放系统
 - 交易日志 + 情境快照关联
 - 历史规则回测（统计某种情境组合的后续表现）
 
 ### **Phase 5 — 打磨**
 - 性能优化（必要时把热点模块用 Rust + PyO3 重写）
-- 移动端适配（响应式 Web）
+- 移动端适配（如恢复 Web）
 - 文档完善
 
 ---
