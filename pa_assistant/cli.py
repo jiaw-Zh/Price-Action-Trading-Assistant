@@ -382,5 +382,100 @@ def analyze_structure(
         )
 
 
+@app.command(name="analyze-volume")
+def analyze_volume(
+    timeframe: str = typer.Option("1h", help="Resample 1m klines to this TF."),
+    bars: int = typer.Option(168, min=1, help="How many recent bars to use."),
+    n_bins: int = typer.Option(50, min=2, help="Volume Profile bins."),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Print delta / CVD trend, VWAP + bands, and Volume Profile summary."""
+    import duckdb
+
+    from pa_assistant.analysis import (
+        compute_delta,
+        compute_volume_profile,
+        compute_vwap,
+        resample_ohlcv,
+    )
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        df = conn.execute(
+            "SELECT open_time, open, high, low, close, volume, "
+            "quote_volume, taker_buy_base "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+    finally:
+        conn.close()
+
+    if df.is_empty():
+        typer.secho(f"No klines for {sym}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    resampled = resample_ohlcv(df, timeframe).tail(bars)
+    with_delta = compute_delta(resampled)
+    with_vwap = compute_vwap(with_delta)
+    profile = compute_volume_profile(resampled, n_bins=n_bins)
+
+    last = with_vwap.row(with_vwap.height - 1, named=True)
+    cvd_first = float(with_delta.get_column("cvd").head(1).item())
+    cvd_last = float(with_delta.get_column("cvd").tail(1).item())
+    cvd_change = cvd_last - cvd_first
+    last_close = float(last["close"])
+
+    typer.secho(
+        f"{sym}  {timeframe}  ({bars} most recent bars)",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+    typer.echo(
+        f"  range:    {with_delta.row(0, named=True)['open_time']:%Y-%m-%d %H:%M}"
+        f"  ->  {last['open_time']:%Y-%m-%d %H:%M}"
+    )
+    typer.echo(f"  close:    ${last_close:>10,.2f}")
+
+    typer.echo("")
+    typer.secho("  Order-flow (delta / CVD)", bold=True)
+    typer.echo(f"    last bar delta:    {last['delta']:>+14,.4f}")
+    typer.echo(f"    CVD over window:   {cvd_change:>+14,.4f}")
+    direction = "buyers in control" if cvd_change > 0 else "sellers in control"
+    typer.echo(f"    interpretation:    {direction}")
+
+    typer.echo("")
+    typer.secho("  VWAP", bold=True)
+    typer.echo(f"    vwap:              ${last['vwap']:>10,.2f}")
+    typer.echo(
+        f"    1-sigma band:      ${last['vwap_lower_1']:>10,.2f}"
+        f"  -  ${last['vwap_upper_1']:>10,.2f}"
+    )
+    typer.echo(
+        f"    2-sigma band:      ${last['vwap_lower_2']:>10,.2f}"
+        f"  -  ${last['vwap_upper_2']:>10,.2f}"
+    )
+    pos = "above" if last_close > last["vwap"] else "below"
+    typer.echo(f"    price is {pos} VWAP")
+
+    typer.echo("")
+    typer.secho("  Volume Profile", bold=True)
+    typer.echo(f"    POC:               ${profile.poc:>10,.2f}")
+    typer.echo(
+        f"    Value Area (70%):  ${profile.val:>10,.2f}"
+        f"  -  ${profile.vah:>10,.2f}"
+    )
+    typer.echo(f"    bin width:         ${profile.bin_width:>10,.2f}")
+    if last_close < profile.val:
+        typer.echo("    price is BELOW value area  (potential mean-reversion long)")
+    elif last_close > profile.vah:
+        typer.echo("    price is ABOVE value area  (potential mean-reversion short)")
+    else:
+        typer.echo("    price is INSIDE value area")
+
+
 if __name__ == "__main__":
     app()
