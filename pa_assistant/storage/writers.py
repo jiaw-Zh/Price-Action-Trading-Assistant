@@ -97,6 +97,45 @@ def insert_oi_snapshot(
     )
 
 
+_OI_COLUMNS = ("timestamp", "symbol", "open_interest", "notional_usd")
+
+
+def upsert_oi_history(db: Database, df: pl.DataFrame) -> int:
+    """Batch-upsert OI rows. Returns number of rows written.
+
+    The DataFrame must contain ``timestamp``, ``symbol``, ``open_interest``,
+    and ``notional_usd`` columns. Idempotent on ``(symbol, timestamp)`` —
+    rerunning a backfill cannot create duplicates.
+    """
+    if df.is_empty():
+        return 0
+
+    missing = set(_OI_COLUMNS) - set(df.columns)
+    if missing:
+        raise ValueError(f"oi DataFrame missing columns: {sorted(missing)}")
+
+    ordered = df.select(_OI_COLUMNS).sort("timestamp")
+    conn = db.connect()
+    conn.register("_oi_buf", ordered)
+    try:
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO oi_1m ({", ".join(_OI_COLUMNS)})
+            SELECT {", ".join(_OI_COLUMNS)} FROM _oi_buf;
+            """
+        )
+    finally:
+        conn.unregister("_oi_buf")
+
+    written = ordered.height
+    log.info(
+        "oi_history_upserted",
+        rows=written,
+        symbol=ordered["symbol"][0] if written else None,
+    )
+    return written
+
+
 def count_klines(db: Database, symbol: str) -> int:
     """Count 1m klines stored for ``symbol``."""
     conn = db.connect()

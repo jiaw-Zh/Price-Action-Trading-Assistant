@@ -15,6 +15,7 @@ from pa_assistant.ingestion.binance import (
     BinanceRestClient,
     interval_to_ms,
     klines_to_polars,
+    oi_hist_to_polars,
 )
 from pa_assistant.ingestion.bitget import BitgetRestClient
 from pa_assistant.ingestion.bybit import BybitRestClient
@@ -44,4 +45,5 @@ __all__ = [
     "interval_to_ms",
     "klines_to_polars",
     "make_funding_provider",
+    "oi_hist_to_polars",
 ]

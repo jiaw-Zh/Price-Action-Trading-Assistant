@@ -16,6 +16,7 @@ from pa_assistant.storage.writers import (
     insert_oi_snapshot,
     latest_kline_open_time,
     upsert_klines_1m,
+    upsert_oi_history,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "latest_kline_open_time",
     "open_db",
     "upsert_klines_1m",
+    "upsert_oi_history",
 ]

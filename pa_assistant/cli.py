@@ -20,6 +20,7 @@ from pa_assistant.ingestion import (
     BinanceRestClient,
     klines_to_polars,
     make_funding_provider,
+    oi_hist_to_polars,
 )
 from pa_assistant.logging import configure_logging, get_logger
 from pa_assistant.storage import (
@@ -28,6 +29,7 @@ from pa_assistant.storage import (
     latest_kline_open_time,
     open_db,
     upsert_klines_1m,
+    upsert_oi_history,
 )
 
 if TYPE_CHECKING:
@@ -210,6 +212,57 @@ def backfill(
         latest = latest_kline_open_time(db, sym)
     if latest is not None:
         typer.echo(f"  latest open_time : {latest.isoformat()}")
+
+
+@app.command(name="backfill-oi")
+def backfill_oi(
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+    days: int = typer.Option(
+        7, min=1, max=30, help="How many days of OI history (Binance caps at 30)."
+    ),
+    period: str = typer.Option(
+        "5m",
+        help=(
+            "OI bucket size. Binance supports: 5m / 15m / 30m / 1h / 2h / "
+            "4h / 6h / 12h / 1d. Smaller = more rows, finer resolution."
+        ),
+    ),
+) -> None:
+    """Backfill historical Open Interest from Binance Futures (≤ 30 days)."""
+    settings = get_settings()
+    _bootstrap(settings)
+    log = get_logger("cli.backfill_oi")
+
+    sym = (symbol or settings.symbol).upper()
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - days * 86_400_000
+
+    log.info(
+        "backfill_oi_start",
+        symbol=sym,
+        period=period,
+        days=days,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
+
+    async def _run() -> int:
+        async with BinanceRestClient.from_settings(settings) as client:
+            with open_db(settings.duckdb_path) as db:
+                total = 0
+                async for page in client.iter_open_interest_hist(
+                    sym, period, start_ms=start_ms, end_ms=end_ms
+                ):
+                    df = oi_hist_to_polars(page, sym)
+                    total += upsert_oi_history(db, df)
+                return total
+
+    written = asyncio.run(_run())
+    typer.secho(
+        f"✓ Backfilled {written} OI rows for {sym} ({days}d, {period})",
+        fg=typer.colors.GREEN,
+        bold=True,
+    )
 
 
 @app.command(name="poll-oi")
