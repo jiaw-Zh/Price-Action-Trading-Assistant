@@ -10,6 +10,7 @@ Submodules:
 * :mod:`pa_assistant.analysis.structure` — swing detection + BOS / CHoCH
 * :mod:`pa_assistant.analysis.volume`    — delta, CVD, VWAP + bands
 * :mod:`pa_assistant.analysis.profile`   — Volume Profile (POC / VAH / VAL)
+* :mod:`pa_assistant.analysis.zones`     — Order Blocks + Fair Value Gaps
 """
 
 from pa_assistant.analysis.profile import VolumeProfile, compute_volume_profile
@@ -20,13 +21,23 @@ from pa_assistant.analysis.structure import (
     detect_swings,
 )
 from pa_assistant.analysis.volume import compute_delta, compute_vwap
+from pa_assistant.analysis.zones import (
+    FairValueGap,
+    OrderBlock,
+    detect_fvgs,
+    detect_order_blocks,
+)
 
 __all__ = [
+    "FairValueGap",
+    "OrderBlock",
     "StructureEvent",
     "VolumeProfile",
     "compute_delta",
     "compute_volume_profile",
     "compute_vwap",
+    "detect_fvgs",
+    "detect_order_blocks",
     "detect_structure_events",
     "detect_swings",
     "resample_ohlcv",

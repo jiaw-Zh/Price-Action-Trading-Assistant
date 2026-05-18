@@ -477,5 +477,105 @@ def analyze_volume(
         typer.echo("    price is INSIDE value area")
 
 
+@app.command(name="analyze-zones")
+def analyze_zones(
+    timeframe: str = typer.Option("1h", help="Resample 1m klines to this TF."),
+    lookback: int = typer.Option(2, min=1, help="Swing fractal lookback."),
+    ob_lookback: int = typer.Option(10, min=1, help="OB backward search bars."),
+    show_mitigated: bool = typer.Option(
+        False, "--show-mitigated", help="Include already-mitigated zones."
+    ),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Print active Order Blocks and Fair Value Gaps."""
+    import duckdb
+
+    from pa_assistant.analysis import (
+        detect_fvgs,
+        detect_order_blocks,
+        detect_structure_events,
+        detect_swings,
+        resample_ohlcv,
+    )
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        df = conn.execute(
+            "SELECT open_time, open, high, low, close, volume "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+    finally:
+        conn.close()
+
+    if df.is_empty():
+        typer.secho(f"No klines for {sym}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    resampled = resample_ohlcv(df, timeframe)
+    annotated = detect_swings(resampled, lookback=lookback)
+    events = detect_structure_events(annotated)
+    obs = detect_order_blocks(resampled, events, lookback=ob_lookback)
+    fvgs = detect_fvgs(resampled)
+
+    last_close = float(resampled.row(resampled.height - 1, named=True)["close"])
+
+    typer.secho(
+        f"{sym}  {timeframe}  current price: ${last_close:,.2f}",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+
+    typer.echo("")
+    typer.secho(
+        f"  Order Blocks  ({sum(1 for o in obs if o.mitigated_at is None)} active "
+        f"/ {len(obs)} total)",
+        bold=True,
+    )
+    for ob in obs:
+        if not show_mitigated and ob.mitigated_at is not None:
+            continue
+        arrow = "↑" if ob.direction == "bullish" else "↓"
+        colour = typer.colors.GREEN if ob.direction == "bullish" else typer.colors.RED
+        status = (
+            "MITIGATED" if ob.mitigated_at is not None else "ACTIVE"
+        )
+        typer.secho(
+            f"    {ob.timestamp:%Y-%m-%d %H:%M}  {arrow} {ob.direction:7s}  "
+            f"body ${ob.bottom:>9,.2f}-${ob.top:<9,.2f}  [{status}]",
+            fg=colour,
+        )
+
+    typer.echo("")
+    typer.secho(
+        f"  Fair Value Gaps  ({sum(1 for f in fvgs if f.mitigated_at is None)} unfilled "
+        f"/ {len(fvgs)} total)",
+        bold=True,
+    )
+    # Show the most recent unfilled gaps near current price (top 10 by recency).
+    unfilled = [f for f in fvgs if f.mitigated_at is None]
+    shown = unfilled[-10:] if not show_mitigated else fvgs[-10:]
+    for fvg in shown:
+        arrow = "↑" if fvg.direction == "bullish" else "↓"
+        colour = typer.colors.GREEN if fvg.direction == "bullish" else typer.colors.RED
+        status = "FILLED" if fvg.mitigated_at is not None else "UNFILLED"
+        # Annotate distance from current price.
+        if last_close < fvg.bottom:
+            pos = f"price ${(fvg.bottom - last_close):,.0f} below gap"
+        elif last_close > fvg.top:
+            pos = f"price ${(last_close - fvg.top):,.0f} above gap"
+        else:
+            pos = "PRICE INSIDE GAP"
+        typer.secho(
+            f"    {fvg.timestamp:%Y-%m-%d %H:%M}  {arrow} {fvg.direction:7s}  "
+            f"${fvg.bottom:>9,.2f}-${fvg.top:<9,.2f}  [{status}]  {pos}",
+            fg=colour,
+        )
+
+
 if __name__ == "__main__":
     app()
