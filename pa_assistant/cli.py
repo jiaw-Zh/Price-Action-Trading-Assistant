@@ -309,5 +309,78 @@ def poll_funding(
         )
 
 
+@app.command(name="analyze-structure")
+def analyze_structure(
+    timeframe: str = typer.Option("15m", help="Resample 1m klines to this TF."),
+    lookback: int = typer.Option(2, min=1, help="Swing fractal lookback (bars each side)."),
+    last: int = typer.Option(20, min=1, help="Print only the last N events."),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Run swing + BOS/CHoCH detection on stored 1m klines.
+
+    Reads ``kline_1m`` from DuckDB, resamples to ``--timeframe``, runs the
+    fractal swing detector and structure-event walker, prints a chronological
+    list of events and trend transitions.
+    """
+    import duckdb
+
+    from pa_assistant.analysis import (
+        detect_structure_events,
+        detect_swings,
+        resample_ohlcv,
+    )
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        df = conn.execute(
+            "SELECT open_time, open, high, low, close, volume "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+    finally:
+        conn.close()
+
+    if df.is_empty():
+        typer.secho(
+            f"No klines for {sym}. Run `pa backfill` first.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+
+    resampled = resample_ohlcv(df, timeframe)
+    annotated = detect_swings(resampled, lookback=lookback)
+    events = detect_structure_events(annotated)
+
+    n_high = annotated.get_column("swing_high").is_not_null().sum()
+    n_low = annotated.get_column("swing_low").is_not_null().sum()
+
+    typer.secho(
+        f"{sym}  {timeframe}  ({df.height:,} 1m bars → {resampled.height} {timeframe} bars)",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+    typer.echo(f"  swings:  {n_high} highs · {n_low} lows  (lookback={lookback})")
+    typer.echo(f"  events:  {len(events)} total")
+
+    if not events:
+        return
+
+    typer.echo("")
+    typer.secho("  Recent structure events:", bold=True)
+    for ev in events[-last:]:
+        is_up = "_up" in ev.event_type
+        arrow = "↑" if is_up else "↓"
+        colour = typer.colors.GREEN if is_up else typer.colors.RED
+        typer.secho(
+            f"    {ev.timestamp:%Y-%m-%d %H:%M}  {arrow} {ev.event_type:11s}  "
+            f"@ ${ev.level:>10,.2f}   ({ev.trend_before} → {ev.trend_after})",
+            fg=colour,
+        )
+
+
 if __name__ == "__main__":
     app()
