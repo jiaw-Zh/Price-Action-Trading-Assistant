@@ -16,6 +16,7 @@ from pa_assistant.ingestion.binance import (
     interval_to_ms,
     klines_to_polars,
 )
+from pa_assistant.ingestion.bitget import BitgetRestClient
 from pa_assistant.ingestion.bybit import BybitRestClient
 from pa_assistant.ingestion.funding import (
     CoinglassFundingProvider,
@@ -25,15 +26,18 @@ from pa_assistant.ingestion.funding import (
     WeightedFundingRate,
     make_funding_provider,
 )
+from pa_assistant.ingestion.gateio import GateioRestClient
 from pa_assistant.ingestion.okx import OkxRestClient
 
 __all__ = [
     "INTERVAL_MS",
     "BinanceRestClient",
+    "BitgetRestClient",
     "BybitRestClient",
     "CoinglassFundingProvider",
     "ExchangeFundingSnapshot",
     "FundingProvider",
+    "GateioRestClient",
     "OkxRestClient",
     "SelfAggregatedFundingProvider",
     "WeightedFundingRate",

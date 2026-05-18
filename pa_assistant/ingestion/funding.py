@@ -33,7 +33,9 @@ from typing import Final, Protocol
 
 from pa_assistant.config import Settings
 from pa_assistant.ingestion.binance import BinanceRestClient
+from pa_assistant.ingestion.bitget import BitgetRestClient
 from pa_assistant.ingestion.bybit import BybitRestClient
+from pa_assistant.ingestion.gateio import GateioRestClient
 from pa_assistant.ingestion.okx import OkxRestClient
 from pa_assistant.logging import get_logger
 
@@ -92,11 +94,15 @@ SYMBOL_MAP: Final[dict[str, dict[str, str]]] = {
         "binance": "BTCUSDT",
         "okx": "BTC-USDT-SWAP",
         "bybit": "BTCUSDT",
+        "bitget": "BTCUSDT",
+        "gateio": "BTC_USDT",
     },
     "ETHUSDT": {
         "binance": "ETHUSDT",
         "okx": "ETH-USDT-SWAP",
         "bybit": "ETHUSDT",
+        "bitget": "ETHUSDT",
+        "gateio": "ETH_USDT",
     },
 }
 
@@ -122,9 +128,9 @@ def _ms_to_naive_utc(ms: int) -> datetime:
 
 
 class SelfAggregatedFundingProvider:
-    """Computes OI-weighted funding rate from Binance + OKX + Bybit.
+    """Computes OI-weighted funding rate from Binance + OKX + Bybit + Bitget + Gate.io.
 
-    The three exchange clients are injected so tests can swap in mocks.
+    The exchange clients are injected so tests can swap in mocks.
     Closing the provider closes all owned underlying clients.
     """
 
@@ -136,10 +142,14 @@ class SelfAggregatedFundingProvider:
         binance: BinanceRestClient,
         okx: OkxRestClient,
         bybit: BybitRestClient,
+        bitget: BitgetRestClient,
+        gateio: GateioRestClient,
     ) -> None:
         self.binance = binance
         self.okx = okx
         self.bybit = bybit
+        self.bitget = bitget
+        self.gateio = gateio
 
     @classmethod
     def from_settings(cls, settings: Settings) -> SelfAggregatedFundingProvider:
@@ -148,14 +158,17 @@ class SelfAggregatedFundingProvider:
             binance=BinanceRestClient.from_settings(settings),
             okx=OkxRestClient(proxy=proxy),
             bybit=BybitRestClient(proxy=proxy),
+            bitget=BitgetRestClient(proxy=proxy),
+            gateio=GateioRestClient(proxy=proxy),
         )
 
     async def aclose(self) -> None:
-        # Close in parallel; ignore individual failures.
         await asyncio.gather(
             self.binance.aclose(),
             self.okx.aclose(),
             self.bybit.aclose(),
+            self.bitget.aclose(),
+            self.gateio.aclose(),
             return_exceptions=True,
         )
 
@@ -202,6 +215,30 @@ class SelfAggregatedFundingProvider:
             snapshot_time=_ms_to_naive_utc(int(oi["timestamp"])),
         )
 
+    async def _fetch_bitget(self, symbol: str) -> ExchangeFundingSnapshot:
+        funding, oi = await asyncio.gather(
+            self.bitget.get_funding_rate(symbol),
+            self.bitget.get_open_interest(symbol),
+        )
+        return ExchangeFundingSnapshot(
+            exchange="bitget",
+            funding_rate=float(funding["fundingRate"]),
+            open_interest_base=float(oi["size"]),
+            snapshot_time=datetime.now(UTC).replace(tzinfo=None),
+        )
+
+    async def _fetch_gateio(self, contract: str) -> ExchangeFundingSnapshot:
+        info = await self.gateio.get_contract(contract)
+        # OI in base = position_size (contracts) * quanto_multiplier (BTC/contract)
+        position_size = float(info["position_size"])
+        multiplier = float(info["quanto_multiplier"])
+        return ExchangeFundingSnapshot(
+            exchange="gateio",
+            funding_rate=float(info["funding_rate"]),
+            open_interest_base=position_size * multiplier,
+            snapshot_time=datetime.now(UTC).replace(tzinfo=None),
+        )
+
     # ----- Aggregation -----
 
     async def get_weighted_funding(self, symbol: str) -> WeightedFundingRate:
@@ -210,6 +247,8 @@ class SelfAggregatedFundingProvider:
             ("binance", lambda: self._fetch_binance(ids["binance"])),
             ("okx", lambda: self._fetch_okx(ids["okx"])),
             ("bybit", lambda: self._fetch_bybit(ids["bybit"])),
+            ("bitget", lambda: self._fetch_bitget(ids["bitget"])),
+            ("gateio", lambda: self._fetch_gateio(ids["gateio"])),
         ]
 
         results = await asyncio.gather(
