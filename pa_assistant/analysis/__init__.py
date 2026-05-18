@@ -6,13 +6,18 @@ on Polars DataFrames. Anything network-bound or DuckDB-bound stays in
 
 Submodules:
 
-* :mod:`pa_assistant.analysis.resample`  — 1m OHLCV → higher timeframe
-* :mod:`pa_assistant.analysis.structure` — swing detection + BOS / CHoCH
-* :mod:`pa_assistant.analysis.volume`    — delta, CVD, VWAP + bands
-* :mod:`pa_assistant.analysis.profile`   — Volume Profile (POC / VAH / VAL)
-* :mod:`pa_assistant.analysis.zones`     — Order Blocks + Fair Value Gaps
+* :mod:`pa_assistant.analysis.resample`   — 1m OHLCV → higher timeframe
+* :mod:`pa_assistant.analysis.structure`  — swing detection + BOS / CHoCH
+* :mod:`pa_assistant.analysis.volume`     — delta, CVD, VWAP + bands
+* :mod:`pa_assistant.analysis.profile`    — Volume Profile (POC / VAH / VAL)
+* :mod:`pa_assistant.analysis.zones`      — Order Blocks + Fair Value Gaps
+* :mod:`pa_assistant.analysis.liquidity`  — Equal-Highs / Equal-Lows pools
 """
 
+from pa_assistant.analysis.liquidity import (
+    LiquidityLevel,
+    detect_liquidity_levels,
+)
 from pa_assistant.analysis.profile import VolumeProfile, compute_volume_profile
 from pa_assistant.analysis.resample import resample_ohlcv
 from pa_assistant.analysis.structure import (
@@ -30,6 +35,7 @@ from pa_assistant.analysis.zones import (
 
 __all__ = [
     "FairValueGap",
+    "LiquidityLevel",
     "OrderBlock",
     "StructureEvent",
     "VolumeProfile",
@@ -37,6 +43,7 @@ __all__ = [
     "compute_volume_profile",
     "compute_vwap",
     "detect_fvgs",
+    "detect_liquidity_levels",
     "detect_order_blocks",
     "detect_structure_events",
     "detect_swings",

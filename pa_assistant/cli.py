@@ -577,5 +577,94 @@ def analyze_zones(
         )
 
 
+@app.command(name="analyze-liquidity")
+def analyze_liquidity(
+    timeframe: str = typer.Option("1h", help="Resample 1m klines to this TF."),
+    lookback: int = typer.Option(2, min=1, help="Swing fractal lookback."),
+    tolerance_bps: float = typer.Option(
+        5.0, min=0.1, help="Cluster tolerance in basis points."
+    ),
+    min_touches: int = typer.Option(
+        2, min=2, help="Minimum swings to form a pool."
+    ),
+    show_swept: bool = typer.Option(
+        False, "--show-swept", help="Include already-swept levels."
+    ),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Print active Equal-Highs / Equal-Lows liquidity pools."""
+    import duckdb
+
+    from pa_assistant.analysis import (
+        detect_liquidity_levels,
+        resample_ohlcv,
+    )
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        df = conn.execute(
+            "SELECT open_time, open, high, low, close, volume "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+    finally:
+        conn.close()
+
+    if df.is_empty():
+        typer.secho(f"No klines for {sym}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    resampled = resample_ohlcv(df, timeframe)
+    levels = detect_liquidity_levels(
+        resampled,
+        lookback=lookback,
+        tolerance_bps=tolerance_bps,
+        min_touches=min_touches,
+    )
+    last_close = float(resampled.row(resampled.height - 1, named=True)["close"])
+
+    n_active = sum(1 for lv in levels if lv.swept_at is None)
+    typer.secho(
+        f"{sym}  {timeframe}  current price: ${last_close:,.2f}",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+    typer.secho(
+        f"  Liquidity Pools  ({n_active} active / {len(levels)} total)",
+        bold=True,
+    )
+
+    if not levels:
+        typer.echo("    (no clusters meet the tolerance/min_touches criteria)")
+        return
+
+    # Sort displayed levels by price for a "ladder" view: highs above lows.
+    shown = [lv for lv in levels if show_swept or lv.swept_at is None]
+    shown.sort(key=lambda lv: -lv.price)
+
+    typer.echo("")
+    for lv in shown:
+        arrow = "▲" if lv.side == "high" else "▼"
+        colour = typer.colors.RED if lv.side == "high" else typer.colors.GREEN
+        status = "SWEPT" if lv.swept_at is not None else "ACTIVE"
+        # Distance to current price.
+        if lv.side == "high":
+            dist = lv.price - last_close
+            pos = f"${dist:,.0f} above price" if dist > 0 else f"${-dist:,.0f} below price"
+        else:
+            dist = last_close - lv.price
+            pos = f"${dist:,.0f} below price" if dist > 0 else f"${-dist:,.0f} above price"
+        typer.secho(
+            f"    {arrow} {lv.side:5s}  ${lv.price:>10,.2f}  "
+            f"{len(lv.touches)}x touches  spread {lv.spread_bps:>4.1f}bps  "
+            f"[{status}]  {pos}",
+            fg=colour,
+        )
+
+
 if __name__ == "__main__":
     app()
