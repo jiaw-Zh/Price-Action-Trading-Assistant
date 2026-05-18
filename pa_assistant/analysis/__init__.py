@@ -14,6 +14,7 @@ Submodules:
 * :mod:`pa_assistant.analysis.liquidity`   — Equal-Highs / Equal-Lows pools
 * :mod:`pa_assistant.analysis.stop_hunt`   — Stop hunt / liquidity sweep events
 * :mod:`pa_assistant.analysis.divergence`  — Multi-indicator divergences (CVD/Volume/OI)
+* :mod:`pa_assistant.analysis.wyckoff`     — Wyckoff phase state machine
 """
 
 from pa_assistant.analysis.divergence import (
@@ -33,6 +34,15 @@ from pa_assistant.analysis.structure import (
     detect_swings,
 )
 from pa_assistant.analysis.volume import compute_delta, compute_vwap
+from pa_assistant.analysis.wyckoff import (
+    WyckoffEvent,
+    WyckoffEventType,
+    WyckoffPhase,
+    WyckoffSnapshot,
+    analyze_wyckoff,
+    detect_wyckoff_events,
+    evolve,
+)
 from pa_assistant.analysis.zones import (
     FairValueGap,
     OrderBlock,
@@ -48,6 +58,11 @@ __all__ = [
     "StopHunt",
     "StructureEvent",
     "VolumeProfile",
+    "WyckoffEvent",
+    "WyckoffEventType",
+    "WyckoffPhase",
+    "WyckoffSnapshot",
+    "analyze_wyckoff",
     "compute_delta",
     "compute_volume_profile",
     "compute_vwap",
@@ -58,5 +73,7 @@ __all__ = [
     "detect_stop_hunts",
     "detect_structure_events",
     "detect_swings",
+    "detect_wyckoff_events",
+    "evolve",
     "resample_ohlcv",
 ]

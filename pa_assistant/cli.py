@@ -956,5 +956,159 @@ def analyze_divergences(
         )
 
 
+@app.command(name="wyckoff")
+def wyckoff(
+    timeframe: str = typer.Option("4h", help="Resample 1m klines to this TF."),
+    swing_lookback: int = typer.Option(3, min=1, help="Fractal lookback for swings."),
+    volume_climax_z: float = typer.Option(
+        2.0, min=0.5, help="Z-score threshold for volume climax detection."
+    ),
+    volume_window: int = typer.Option(
+        20, min=5, help="Rolling window for volume z-score baseline."
+    ),
+    eq_tolerance_bps: float = typer.Option(
+        10.0, min=0.0, help="Tolerance for liquidity pool clustering (bps)."
+    ),
+    show_events: int = typer.Option(
+        15, min=0, help="How many recent events to show in the audit trail."
+    ),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Wyckoff phase state machine: current state, range, event chain."""
+    import duckdb
+
+    from pa_assistant.analysis import (
+        analyze_wyckoff,
+        compute_delta,
+        detect_divergences,
+        resample_ohlcv,
+    )
+    from pa_assistant.analysis.wyckoff import WyckoffPhase
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        klines = conn.execute(
+            "SELECT open_time, open, high, low, close, volume, "
+            "quote_volume, taker_buy_base "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+        oi_df = conn.execute(
+            "SELECT timestamp AS open_time, open_interest AS oi "
+            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
+            [sym],
+        ).pl()
+    finally:
+        conn.close()
+
+    if klines.is_empty():
+        typer.secho(f"No klines for {sym}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    resampled = resample_ohlcv(klines, timeframe)
+    resampled = compute_delta(resampled)
+    if not oi_df.is_empty():
+        resampled = resampled.sort("open_time").join_asof(
+            oi_df.sort("open_time"), on="open_time", strategy="backward"
+        )
+
+    divergences = detect_divergences(resampled)
+
+    snaps = analyze_wyckoff(
+        resampled,
+        swing_lookback=swing_lookback,
+        volume_climax_z=volume_climax_z,
+        volume_window=volume_window,
+        eq_tolerance_bps=eq_tolerance_bps,
+        divergences=divergences,
+    )
+    current = snaps[-1]
+    last_close = float(resampled.row(resampled.height - 1, named=True)["close"])
+
+    typer.secho(
+        f"{sym}  {timeframe}  current price: ${last_close:,.2f}",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+
+    phase_label = _format_phase(current.phase)
+    phase_colour = {
+        "accumulation": typer.colors.GREEN,
+        "distribution": typer.colors.RED,
+    }.get(current.side or "", typer.colors.WHITE)
+    typer.echo("")
+    typer.secho(
+        f"  Wyckoff state: {phase_label}  (confidence {current.confidence:.0%})",
+        fg=phase_colour,
+        bold=True,
+    )
+
+    if current.range_high is not None or current.range_low is not None:
+        rh = f"${current.range_high:,.0f}" if current.range_high is not None else "?"
+        rl = f"${current.range_low:,.0f}" if current.range_low is not None else "?"
+        typer.echo(f"  Range:         {rl}  -  {rh}")
+
+    if current.invalidation_price is not None:
+        typer.echo(f"  Invalidation:  bar close past ${current.invalidation_price:,.0f}")
+
+    if current.phase == WyckoffPhase.NEUTRAL and not current.events:
+        typer.echo(
+            "  (no Wyckoff-defining events detected — try a longer timeframe or "
+            "more history)"
+        )
+        return
+
+    if show_events > 0 and current.events:
+        typer.echo("")
+        typer.secho(
+            f"  Event chain (last {min(show_events, len(current.events))}):", bold=True
+        )
+        for e in current.events[-show_events:]:
+            colour = (
+                typer.colors.GREEN
+                if e.side == "accumulation"
+                else typer.colors.RED
+            )
+            label = _format_event_type(e.event_type)
+            typer.secho(
+                f"    {e.timestamp:%Y-%m-%d %H:%M}  {label:<28s} "
+                f"@${e.price:>10,.0f}  conf {e.confidence:.0%}",
+                fg=colour,
+            )
+
+
+def _format_phase(phase: object) -> str:
+    """Pretty-print a WyckoffPhase (e.g. 'Accumulation Phase C')."""
+    s = str(phase.value if hasattr(phase, "value") else phase)
+    if s == "neutral":
+        return "Neutral"
+    side, _, sub = s.partition("_phase_")
+    return f"{side.capitalize()} Phase {sub.upper()}"
+
+
+def _format_event_type(event_type: object) -> str:
+    """Translate enum → readable phrase."""
+    s = str(event_type.value if hasattr(event_type, "value") else event_type)
+    pretty = {
+        "selling_climax": "Selling Climax (SC)",
+        "automatic_rally": "Automatic Rally (AR)",
+        "secondary_test": "Secondary Test (ST)",
+        "spring": "Spring",
+        "sign_of_strength": "Sign of Strength (SOS)",
+        "last_point_of_support": "Last Point of Support (LPS)",
+        "buying_climax": "Buying Climax (BC)",
+        "automatic_reaction": "Automatic Reaction (AR)",
+        "secondary_test_distribution": "Secondary Test (ST)",
+        "upthrust_after_distribution": "UTAD",
+        "sign_of_weakness": "Sign of Weakness (SOW)",
+        "last_point_of_supply": "Last Point of Supply (LPSY)",
+    }
+    return pretty.get(s, s)
+
+
 if __name__ == "__main__":
     app()
