@@ -1022,6 +1022,20 @@ def render_markdown(report: ContextReport, *, language: Language = "en") -> str:
             out.append(f"- {f}")
         out.append("")
 
+    # Funding / OI
+    fd = report.funding
+    if fd.oi is not None or fd.funding_rate is not None:
+        out.append("**资金费率 / OI:**" if zh else "**Funding / OI:**")
+        if fd.oi is not None:
+            oi_line = f"- OI: {fd.oi:,.0f}"
+            if fd.oi_change_24h_pct is not None:
+                oi_line += f"  ({fd.oi_change_24h_pct:+.2%} 24h)"
+            out.append(oi_line)
+        if fd.funding_rate is not None:
+            label = "资金费率" if zh else "Funding rate"
+            out.append(f"- {label}: {fd.funding_rate:.4f}")
+        out.append("")
+
     # Key levels
     if (
         report.invalidation_long is not None
