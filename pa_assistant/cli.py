@@ -1324,5 +1324,208 @@ def context_report(
     typer.echo(render_text(report))
 
 
+@app.command(name="send-alert")
+def send_alert(
+    timeframe: str = typer.Option("1h", help="Working timeframe."),
+    htf: str | None = typer.Option(None, help="Optional higher TF for trend alignment."),
+    title: str | None = typer.Option(
+        None, help="Override the message title (default: derived from net bias)."
+    ),
+    dry_run: bool = typer.Option(
+        False, help="Build & print the message but don't send it anywhere."
+    ),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Build a context report and push it to all configured channels."""
+    import duckdb
+
+    from pa_assistant.analysis import (
+        analyze_wyckoff,
+        build_context_report,
+        build_flow_context,
+        build_funding_context,
+        build_liquidity_map,
+        build_stop_hunt_context,
+        build_trend_context,
+        build_wyckoff_context,
+        build_zone_context,
+        compute_delta,
+        compute_volume_profile,
+        compute_vwap,
+        detect_divergences,
+        detect_fvgs,
+        detect_liquidity_levels,
+        detect_order_blocks,
+        detect_stop_hunts,
+        detect_structure_events,
+        detect_swings,
+        render_markdown,
+        resample_ohlcv,
+    )
+    from pa_assistant.notifications import (
+        NotificationMessage,
+        configured_channels,
+        send_to_all,
+    )
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    # ----- 1. load + analyze (mirrors context-report) -----
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        klines = conn.execute(
+            "SELECT open_time, open, high, low, close, volume, "
+            "quote_volume, taker_buy_base "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+        oi_df = conn.execute(
+            "SELECT timestamp AS open_time, open_interest AS oi "
+            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
+            [sym],
+        ).pl()
+        funding_row = conn.execute(
+            "SELECT weighted_rate FROM funding_weighted "
+            "WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+            [sym],
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if klines.is_empty():
+        typer.secho(f"No klines for {sym}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    working = resample_ohlcv(klines, timeframe)
+    working = compute_delta(working)
+    if not oi_df.is_empty():
+        working = working.sort("open_time").join_asof(
+            oi_df.sort("open_time"), on="open_time", strategy="backward"
+        )
+    last_close = float(working.row(working.height - 1, named=True)["close"])
+    last_ts = working.row(working.height - 1, named=True)["open_time"]
+
+    annotated = detect_swings(working, lookback=3)
+    structure_events = detect_structure_events(annotated)
+    liquidity_levels = detect_liquidity_levels(working, tolerance_bps=10.0)
+    stop_hunts = detect_stop_hunts(working, liquidity_levels)
+    order_blocks = detect_order_blocks(working, structure_events)
+    fvgs = detect_fvgs(working)
+    divergences = detect_divergences(working)
+    wyckoff_snap = analyze_wyckoff(working, swing_lookback=3, divergences=divergences)[-1]
+
+    vwap_df = compute_vwap(working)
+    vwap = (
+        float(vwap_df.row(vwap_df.height - 1, named=True)["vwap"])
+        if "vwap" in vwap_df.columns and vwap_df.height > 0
+        else None
+    )
+    profile = compute_volume_profile(working)
+    poc = profile.poc if profile is not None else None
+
+    htf_trend = "none"
+    htf_events: list[Any] = []
+    if htf is not None:
+        htf_df = resample_ohlcv(klines, htf)
+        htf_annotated = detect_swings(htf_df, lookback=3)
+        htf_events = detect_structure_events(htf_annotated)
+        if htf_events:
+            last = htf_events[-1]
+            if last.event_type in {"BOS_up", "CHoCH_up"}:
+                htf_trend = "up"
+            elif last.event_type in {"BOS_down", "CHoCH_down"}:
+                htf_trend = "down"
+
+    working_trend = "none"
+    if structure_events:
+        last = structure_events[-1]
+        if last.event_type in {"BOS_up", "CHoCH_up"}:
+            working_trend = "up"
+        elif last.event_type in {"BOS_down", "CHoCH_down"}:
+            working_trend = "down"
+
+    oi_now = None
+    oi_24h_ago = None
+    if not oi_df.is_empty():
+        from datetime import timedelta as _td
+
+        oi_now_row = oi_df.row(oi_df.height - 1, named=True)
+        oi_now = float(oi_now_row["oi"])
+        target = oi_now_row["open_time"] - _td(hours=24)
+        candidates = oi_df.filter(oi_df["open_time"] <= target)
+        if candidates.height > 0:
+            oi_24h_ago = float(candidates.row(candidates.height - 1, named=True)["oi"])
+    funding_rate = float(funding_row[0]) if funding_row else None
+
+    cvd_series = working.get_column("cvd").to_list() if "cvd" in working.columns else []
+    report = build_context_report(
+        timestamp=last_ts,
+        symbol=sym,
+        timeframe=timeframe,
+        current_price=last_close,
+        trend=build_trend_context(
+            working_timeframe=timeframe,
+            working_trend=working_trend,  # type: ignore[arg-type]
+            working_events=structure_events,
+            htf_timeframe=htf,
+            htf_trend=htf_trend,  # type: ignore[arg-type]
+            htf_events=htf_events,
+        ),
+        wyckoff=build_wyckoff_context(wyckoff_snap),
+        liquidity=build_liquidity_map(liquidity_levels, current_price=last_close),
+        zones=build_zone_context(order_blocks, fvgs, current_price=last_close),
+        flow=build_flow_context(
+            cvd_series=cvd_series,
+            vwap=vwap,
+            current_price=last_close,
+            poc=poc,
+            divergences=divergences,
+        ),
+        stop_hunts=build_stop_hunt_context(stop_hunts),
+        funding=build_funding_context(
+            oi=oi_now, oi_24h_ago=oi_24h_ago, funding_rate=funding_rate
+        ),
+    )
+
+    # ----- 2. build the notification message -----
+    bias = report.scorecard.net_bias.upper()
+    derived_title = (
+        title or f"[{sym} {timeframe}] {bias} bias @ ${last_close:,.0f}"
+    )
+    body = render_markdown(report)
+    message = NotificationMessage(title=derived_title, body=body, format="markdown")
+
+    if dry_run:
+        typer.secho("[dry-run] would send:", fg=typer.colors.YELLOW, bold=True)
+        typer.echo(f"\nTitle: {message.title}\n")
+        typer.echo(message.body)
+        return
+
+    # ----- 3. dispatch -----
+    channels = configured_channels(settings)
+    if not channels:
+        typer.secho(
+            "No notification channels configured. "
+            "Set TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID, "
+            "WECHAT_WORK_WEBHOOK_URL, or LARK_WEBHOOK_URL in your .env.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=2)
+
+    typer.echo(f"Dispatching to {len(channels)} channel(s)...")
+    outcome = asyncio.run(send_to_all(channels, message))
+    failures = [name for name, err in outcome.items() if err is not None]
+    successes = [name for name, err in outcome.items() if err is None]
+    for name in successes:
+        typer.secho(f"  ✓ {name}", fg=typer.colors.GREEN)
+    for name in failures:
+        err = outcome[name]
+        typer.secho(f"  ✗ {name}: {err}", fg=typer.colors.RED)
+    if failures and not successes:
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()

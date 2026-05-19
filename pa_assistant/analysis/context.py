@@ -797,3 +797,77 @@ def render_text(report: ContextReport) -> str:
     lines.append(f"    Net bias: {report.scorecard.net_bias.upper()}")
 
     return "\n".join(lines)
+
+
+def render_markdown(report: ContextReport) -> str:
+    """Render ContextReport as markdown for messaging platforms.
+
+    Uses GitHub-flavored markdown subset (headings, bold, lists) — broadly
+    compatible with Telegram MarkdownV2 (after escape), WeChat Work
+    markdown card, and as plain readable text on platforms that don't
+    style it.
+    """
+    p = report.current_price
+    out: list[str] = []
+
+    out.append(
+        f"**{report.symbol} {report.timeframe}** ${p:,.2f} "
+        f"({report.timestamp:%Y-%m-%d %H:%M UTC})"
+    )
+    out.append("")
+
+    # Wyckoff (lead with the headline)
+    snap = report.wyckoff.snapshot
+    phase_label = _format_phase(snap.phase.value)
+    out.append(f"**Wyckoff:** {phase_label} (confidence {snap.confidence:.0%})")
+    if snap.range_low is not None or snap.range_high is not None:
+        rl = f"${snap.range_low:,.0f}" if snap.range_low is not None else "?"
+        rh = f"${snap.range_high:,.0f}" if snap.range_high is not None else "?"
+        out.append(f"  Range: {rl} - {rh}")
+    out.append(f"  Next: {report.wyckoff.next_watch}")
+    out.append("")
+
+    # Trend
+    trend_line = f"**Trend:** {report.trend.alignment}"
+    if report.trend.htf_timeframe:
+        trend_line += (
+            f" (HTF {report.trend.htf_timeframe} {report.trend.htf_trend}, "
+            f"{report.trend.working_timeframe} {report.trend.working_trend})"
+        )
+    out.append(trend_line)
+    out.append("")
+
+    # Scorecard (the actionable bit)
+    out.append(f"**Net bias: {report.scorecard.net_bias.upper()}**")
+    out.append("")
+    if report.scorecard.bullish_factors:
+        out.append("Bullish factors:")
+        for f in report.scorecard.bullish_factors:
+            out.append(f"- {f}")
+        out.append("")
+    if report.scorecard.bearish_factors:
+        out.append("Bearish factors:")
+        for f in report.scorecard.bearish_factors:
+            out.append(f"- {f}")
+        out.append("")
+
+    # Key levels
+    if (
+        report.invalidation_long is not None
+        or report.invalidation_short is not None
+        or report.nearest_magnet is not None
+    ):
+        out.append("**Key levels:**")
+        if report.invalidation_long is not None:
+            out.append(f"- Long invalidation: close < ${report.invalidation_long:,.0f}")
+        if report.invalidation_short is not None:
+            out.append(
+                f"- Short invalidation: close > ${report.invalidation_short:,.0f}"
+            )
+        if report.nearest_magnet is not None:
+            side = "up" if report.nearest_magnet > p else "down"
+            out.append(
+                f"- Nearest magnet: ${report.nearest_magnet:,.0f} ({side})"
+            )
+
+    return "\n".join(out)

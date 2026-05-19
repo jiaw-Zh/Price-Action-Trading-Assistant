@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
 
+    # ---------- WeChat Work (企业微信) ----------
+    wechat_work_webhook_url: SecretStr | None = None
+
+    # ---------- Lark / Feishu (飞书) ----------
+    lark_webhook_url: SecretStr | None = None
+    lark_signing_secret: SecretStr | None = None  # optional: for HMAC-signed webhooks
+
     # ----- Computed helpers -----
 
     @property

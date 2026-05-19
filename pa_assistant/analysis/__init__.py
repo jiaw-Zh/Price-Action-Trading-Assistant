@@ -35,6 +35,7 @@ from pa_assistant.analysis.context import (
     build_trend_context,
     build_wyckoff_context,
     build_zone_context,
+    render_markdown,
     render_text,
 )
 from pa_assistant.analysis.divergence import (
@@ -112,6 +113,7 @@ __all__ = [
     "detect_swings",
     "detect_wyckoff_events",
     "evolve",
+    "render_markdown",
     "render_text",
     "resample_ohlcv",
 ]
