@@ -277,21 +277,49 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 - **周期翻转规则**：Phase A/B 时高置信度反向 climax 翻转 cycle；Phase C+ 锁定
 - **Range 重锚**：Phase B 内更低 SC / 更高 AR 自动更新 range 边界
 
-#### 5.4.5 上下文聚合器（Context Aggregator）
+#### 5.4.5 上下文聚合器（Context Aggregator）✅ 已实现
 
-把上面所有模块的输出**聚合成一份"市场情境报告"**：
+把上面所有模块的输出**聚合成一份"市场情境报告"**，这是系统的最终交付物。
 
-```yaml
-现在 BTC 正处于：
-  趋势:        4h 上涨 / 15m 回调
-  结构:        15m 形成 CHoCH，可能反转
-  位置:        正在测试 1h Bullish Order Block
-  流动性:      下方 Equal Lows 已被扫荡（Stop Hunt 概率 78%）
-  量价:        15m 出现看涨背离（CVD 未创新低）
-  持仓:        OI 在扫荡时下降 → 空头减仓
-  加权费率:    -0.012%（Coinglass，偏空，可能反向）
-  关键位:      上方 FVG 67,200-67,450 未填补
-  情境评分:    长仓机会 7.5 / 10
+**数据结构（全部 frozen-slots dataclass）**
+
+| 类 | 内容 |
+|---|---|
+| `TrendContext` | HTF + 工作 TF 趋势方向 + 5 种对齐标签 |
+| `WyckoffContext` | 当前 FSM 状态 + phase-aware 下一步提示 |
+| `LiquidityMap` | 上方/下方未扫荡流动性池 + 最近被扫荡池 |
+| `ZoneContext` | 生效中的 OB + FVG + 最近上方/下方区域 |
+| `FlowContext` | CVD 趋势 + VWAP 距离 + POC + 近期背离列表 |
+| `StopHuntContext` | 最近确认 stop hunt + bias 推断 |
+| `FundingContext` | OI + 24h 变化 + 5 所加权资金费率 |
+| `Scorecard` | bullish/bearish factor 列表 + 净 bias（+2 margin 防 flip-flop） |
+| `ContextReport` | 以上全部 + 多空 invalidation 价位 + 最近磁吸位 |
+
+**Scorecard 8 类规则**（纯函数，无魔法数字）
+
+1. Wyckoff phase bias（ACC_A/B/C/D/E vs DIST_A/B/C/D/E）
+2. 趋势对齐（aligned_bull / aligned_bear / 反向候选）
+3. Stop hunt 方向（Spring → 看多，UTAD → 看空）
+4. 背离（按 strength 阈值过滤，indicator-agnostic）
+5. 生效中的 OB 数量（≥2 才计入）
+6. 流动性磁吸（单侧未测试 pool 集中）
+7. CVD 趋势（近 N 根 bar 方向）
+8. 资金费率极值（contrarian，阈值 ±0.0003）
+
+净 bias 判定：`len(bullish) - len(bearish) >= 2` 才翻多，`<= -2` 才翻空，否则中性。
+
+**渲染器**
+
+- `render_text()` — 终端友好，多 section 对齐格式（`pa context-report` 使用）
+- `render_markdown()` — IM 平台 markdown，支持 `language="en"/"zh"` 双语切换（`pa send-alert` 使用中文）
+
+**`pa send-alert` 推送流程**
+
+```
+backfill 数据 → 9 个分析模块 → 7 个子上下文 builder
+→ build_context_report() → render_markdown(language="zh")
+→ send_to_all([telegram, wechat_work, lark])
+   asyncio.gather(return_exceptions=True)  # 单 channel 故障不影响其他
 ```
 
 **这是系统的最终交付物。不是信号，是情境。**

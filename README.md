@@ -101,8 +101,32 @@ uv run pa analyze-stop-hunts --timeframe 1h
 uv run pa analyze-divergences --timeframe 4h
 uv run pa wyckoff --timeframe 1h
 
+# 8. 情境聚合报告（系统最终交付物）
+uv run pa context-report --timeframe 1h --htf 4h
+
+# 9. 推送到 IM（需先在 .env 配置至少一个通知渠道）
+uv run pa send-alert --timeframe 1h --htf 4h          # 实际推送
+uv run pa send-alert --timeframe 1h --htf 4h --dry-run # 仅打印，不发送
+
 # 全套质量检查
 make check        # = lint + typecheck + test (304 tests)
+```
+
+### 通知渠道配置（.env）
+
+至少配置一个，`send-alert` 会自动跳过未配置的渠道：
+
+```bash
+# Telegram
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+
+# 企业微信群机器人
+WECHAT_WORK_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR-KEY
+
+# 飞书群机器人
+LARK_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/YOUR-KEY
+LARK_SIGNING_SECRET=your_signing_secret  # 可选
 ```
 
 ### 实际输出示例
@@ -127,6 +151,40 @@ BTCUSDT  4h  current price: $76,706.70
     2026-05-15 12:00  ▲ bullish reversal    volume   strength 58%
     2026-05-15 12:00  ▲ bullish reversal    oi       strength 4%
     ...
+
+$ uv run pa send-alert --timeframe 1h --htf 4h --dry-run
+[dry-run] would send:
+
+Title: [BTCUSDT 1h] 综合倾向: 看多 @ $76,707
+
+**BTCUSDT 1h** $76,706.70 (2026-05-18 19:00 UTC)
+
+**Wyckoff:** 累积阶段 B (置信度 67%)
+  区间: $76,666 - $77,758
+  下一步: 等待 Spring 跌破 $76,666 或突破 $77,758
+
+**趋势:** 双周期一致看空 (HTF 4h 下行, 1h 下行)
+
+**综合倾向: 看多**
+
+看多因素:
+- Wyckoff 阶段 B (供给减少)
+- 成交量 看多背离 (88%) 于 $76,666
+- 成交量 看多背离 (82%) 于 $78,610
+  ...
+
+看空因素:
+- HTF 与工作周期均向下
+- 4 个生效中的看跌订单块
+- CVD 近期下行 (-2,901)
+
+**资金费率 / OI:**
+- OI: 104,790  (+2.14% 24h)
+- 资金费率: 0.0001
+
+**关键价位:**
+- 做多失效: 收盘 < $76,666
+- 最近磁吸: $80,970 (上方)
 ```
 
 ---
