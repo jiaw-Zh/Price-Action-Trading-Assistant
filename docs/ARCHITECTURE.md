@@ -172,10 +172,10 @@
 
 | 表名 | 内容 | 主键 |
 |---|---|---|
-| `kline_1m` | 1 分钟 K 线（其他周期实时聚合） | `open_time` |
+| `kline_1m` | 1 分钟 K 线（其他周期实时聚合） | `(symbol, open_time)` |
+| `oi_1m` | 持仓量快照（5m 历史回填 + 实时轮询） | `(symbol, timestamp)` |
+| `funding_weighted` | 5 源 OI 加权资金费率 | `timestamp` |
 | `trades` | 逐笔成交（按天分区） | `trade_id` |
-| `oi_1m` | 持仓量快照 | `timestamp` |
-| `funding_weighted` | Coinglass 加权资金费率 | `timestamp` |
 | `liquidations` | 爆仓事件 | `timestamp + side` |
 | `context_snapshots` | 情境报告历史（用于复盘） | `timestamp` |
 | `journal` | 交易日志 | `trade_id` |
@@ -224,16 +224,23 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
   - 区分 Bullish / Bearish FVG
   - mitigation 跟踪：首次任意 K 线触碰 gap 即标记
 
-- **流动性池识别（Liquidity Pools）** ⏳ Phase 2
+- **流动性池识别（Liquidity Pools）** ✅ 已实现
   - Equal Highs / Equal Lows（散户止损密集区）
-  - 前期 Swing High / Low（经典止损位）
-  - 整数关口（心理价位）
+  - 贪心 1-D 价格聚类（bps 容差可配置）
+  - Sweep 跟踪：记录池被扫荡的时间和方式
 
-- **Stop Hunt / Liquidity Sweep 检测** ⏳ Phase 2
+- **Stop Hunt / Liquidity Sweep 检测** ✅ 已实现
   - 模式：快速插针突破 → 成交量放大 → 价格迅速收回
-  - 输出：猎杀概率评分 + 反转目标位
+  - 三维置信度：wick_ratio + volume_ratio + confirmed（后续 N 根 bar 收回）
+  - 区分 fakeout（收回）vs clean break（真突破）
 
-- **爆仓热力图** ⏳ Phase 2
+- **多指标背离检测** ✅ 已实现
+  - CVD / Volume / OI 三指标 indicator-agnostic 统一抽象
+  - 邻近同类 swing 比较（HH-HH / LL-LL）
+  - 归一化 strength 0..1
+  - 缺失指标列静默跳过（OI 没回填时 graceful 降级）
+
+- **爆仓热力图** ⏳ 待 WebSocket forceOrder 流接入
   - 基于 OI + 价格结构估算多空爆仓密集区
   - 与价格结构叠加，标注"磁吸位"
 
@@ -241,20 +248,34 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 
 核心思想：**努力 vs 结果**（Effort vs Result）
 
-- **量价背离检测**
+- **量价背离检测** ✅ 已实现
   - 价格新高，CVD/Delta 不创新高 → 看跌背离
   - 价格新低，CVD/Delta 不创新低 → 看涨背离
-  - 多周期背离叠加（1h 背离 + 15m 结构破坏 = 高质量信号）
+  - OI 背离：价格新高但 OI 下降 → 空头平仓推动假涨
+  - 三指标 indicator-agnostic 统一抽象，归一化 strength
 
-- **Volume Climax**：异常放量收窄 K 线（吸筹/派发标志）
-- **No Demand / No Supply Bar**：低量小阳/小阴（趋势衰竭）
-- **Effort vs Result 异常**：大量但价格不动 → 主力吸收
+- **Volume Climax** ✅ 已实现（集成在 Wyckoff 检测器中）
+  - 基于 rolling z-score 的异常放量检测
+  - 与 swing 极值 + 拒绝影线组合 → SC/BC 事件
 
-#### 5.4.4 Wyckoff 阶段状态机（FSM）
+- **No Demand / No Supply Bar**：低量小阳/小阴（趋势衰竭）— 集成在 ST 检测中
+- **Effort vs Result 异常**：大量但价格不动 → 主力吸收 — 集成在 Wyckoff Phase B 判定中
 
-- Accumulation / Distribution Schematic（PS、SC、AR、ST、Spring、Test、SOS、LPS…）
-- 状态机驱动，结合 Range + Volume + 流动性扫荡综合判断
-- 状态转移条件可配置，便于回测调参
+#### 5.4.4 Wyckoff 阶段状态机（FSM）✅ 已实现
+
+- **11 个状态**：NEUTRAL + ACC_A..E + DIST_A..E
+- **12 种事件**：SC/AR/ST/SPRING/SOS/LPS（吸筹）+ BC/AR_DIST/ST_DIST/UTAD/SOW/LPSY（派发）
+- **6 层检测 pass**：
+  1. Climaxes（SC/BC）— volume z-score + swing + rejection wick
+  2. Springs/UTADs — 复用 stop_hunt 模块（1H+ 时间框架闸控）
+  3. AR/AR_DIST — climax 后首个显著反向 swing
+  4. ST/ST_DIST — range 内回测 climax 价位 + volume 萎缩
+  5. SOS/SOW — Spring 后突破 range + 高量大实体
+  6. LPS/LPSY — SOS 后 swing holds 反转后的支撑位
+- **纯函数 FSM**：`evolve(state, event) → state`，可回放可测试
+- **多因子 confluence**：每个事件带 dict 分解（volume_climax / wick_rejection / pool_quality / divergence 等）
+- **周期翻转规则**：Phase A/B 时高置信度反向 climax 翻转 cycle；Phase C+ 锁定
+- **Range 重锚**：Phase B 内更低 SC / 更高 AR 自动更新 range 边界
 
 #### 5.4.5 上下文聚合器（Context Aggregator）
 
@@ -277,14 +298,15 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 
 ### 5.5 应用服务层
 
-- **实时监控（Live Watch）**：图表实时叠加所有标注（OB、FVG、Liquidity、Wyckoff 阶段）
-- **回放/复盘（Replay）**：按任意时间点回放，逐 K 线推进，验证系统判断与实际走势
-- **告警引擎（Alerts）**：基于"情境组合"触发（例如：CHoCH + 流动性扫荡 + 量价背离 同时成立）
-- **交易日志（Journal）**：手动记录交易，系统自动关联当时的市场情境快照，用于事后复盘
+- **CLI 工具**（已实现 ✅）：基于 `typer`，14 个命令覆盖数据接入 + 分析全流程
+- **实时监控（Live Watch）**：图表实时叠加所有标注（OB、FVG、Liquidity、Wyckoff 阶段）— ⏳ 待做
+- **回放/复盘（Replay）**：按任意时间点回放，逐 K 线推进，验证系统判断与实际走势 — ⏳ 待做
+- **告警引擎（Alerts）**：基于"情境组合"触发（例如：CHoCH + 流动性扫荡 + 量价背离 同时成立）— ⏳ Phase 3
+- **交易日志（Journal）**：手动记录交易，系统自动关联当时的市场情境快照，用于事后复盘 — ⏳ Phase 4
 
 ### 5.6 用户交互层
 
-- **CLI 工具**（已实现 ✅）：基于 `typer`，9 个命令覆盖数据接入 + 分析全流程
+- **CLI 工具**（已实现 ✅）：基于 `typer`，14 个命令覆盖数据接入 + 分析全流程
 - **推送渠道**（Phase 3）：Telegram / 企业微信 / 飞书 — 配置占位已预留
 - **Web Dashboard**（暂跳过）：FastAPI + TradingView Lightweight Charts — 需要时再做
 
@@ -335,7 +357,7 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 | 日志 | **structlog** | 结构化 JSON 日志，开发时 pretty-print |
 | CLI | **typer** | 类型友好、自动帮助文档 |
 | 类型检查 | **mypy strict** + **ruff** | 弥补动态类型，lint 统一 |
-| 测试 | **pytest** + `pytest-asyncio` | 单测 + 集成测（当前 165 个） |
+| 测试 | **pytest** + `pytest-asyncio` | 单测 + 集成测（当前 262 个） |
 
 **当前未使用但保留规划**：
 - Web 后端：FastAPI + Uvicorn（Phase 1 切片 4 暂跳过）
@@ -360,11 +382,10 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 - ✅ 配置管理（`pydantic-settings`，环境变量 + `.env`）
 - ✅ 日志系统（`structlog`）
 - ✅ DuckDB 初始化 + 表结构
-- ✅ Binance REST：历史 K 线补齐 + OI 轮询
+- ✅ Binance REST：历史 K 线补齐 + OI 轮询 + OI 历史回填
 - ✅ **5 源自聚合资金费率**（Binance + OKX + Bybit + Bitget + Gate.io，OI 加权）
 - ✅ HTTP/SOCKS 代理支持（应对 CDN 区域封锁）
 - ⏳ Binance WebSocket（K 线 / Trades / 爆仓流）— 推迟，REST 轮询暂时够用
-- ⏳ 数据完整性校验（漏单检测）— 推迟到 WebSocket 接入后
 
 ### **Phase 1 — 核心分析引擎（3/4 切片完成 ✅）**
 - ✅ **切片 1**：1m → 任意 TF Polars 重采样；分形 swing；BOS/CHoCH 状态机
@@ -372,27 +393,22 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 - ✅ **切片 3**：Order Block（依赖结构事件）+ Fair Value Gap（纯几何）+ mitigation 跟踪
 - ⏭️ **切片 4**（Web 图表叠加）— 暂跳过，CLI 报告已能读
 
-### **Phase 2 — 流动性引擎（下一阶段）** ⭐
-- Equal Highs/Lows 识别
-- Stop Hunt 检测算法（结合 K 线 wick + 量价确认）
-- 爆仓热力图
-- 量价背离检测（多周期）
+### **Phase 2 — 流动性引擎（3/4 切片完成 ✅）** ⭐
+- ✅ **切片 1**：Equal Highs/Lows 流动性池识别（贪心 1-D 聚类 + sweep 跟踪）
+- ✅ **切片 2**：Stop Hunt 检测（fakeout vs clean break，三维置信度）
+- ✅ **切片 3**：多指标背离（CVD/Volume/OI）+ OI 历史回填基础设施
+- ⏳ **切片 4**：爆仓热力图（待 WebSocket forceOrder 流接入）
 
-### **Phase 3 — 上下文聚合 + 告警 + 推送**
-- Wyckoff 阶段状态机
-- 情境报告生成器（每日/按需）
-- 告警规则 DSL（YAML 配置，用户可自定义组合条件）
-- 推送渠道抽象 + 实现：Telegram / 企业微信 / 飞书
+### **Phase 3 — 上下文聚合 + 告警（2/4 切片完成 🚧）**
+- ✅ **切片 1**：Wyckoff 阶段状态机（11 状态 + 12 事件 + 纯函数 FSM + confluence 评分）
+- ✅ **切片 2**：完善事件检测器（AR/ST/SOS/LPS + 1H 闸控 + range 重锚）
+- ⏳ **切片 3**：情境聚合报告（合并所有模块输出为一份可读决策报告）
+- ⏳ **切片 4**：告警推送（企微 / 飞书 / Telegram）
 
 ### **Phase 4 — 复盘与回测**
 - K 线回放系统
 - 交易日志 + 情境快照关联
 - 历史规则回测（统计某种情境组合的后续表现）
-
-### **Phase 5 — 打磨**
-- 性能优化（必要时把热点模块用 Rust + PyO3 重写）
-- 移动端适配（如恢复 Web）
-- 文档完善
 
 ---
 
@@ -406,10 +422,10 @@ Price-Action-Trading-Assistant/
 │   ├── __init__.py
 │   ├── config.py               # pydantic-settings 配置管理
 │   ├── logging.py              # structlog 封装
-│   ├── cli.py                  # typer CLI（9 个命令）
+│   ├── cli.py                  # typer CLI（14 个命令）
 │   ├── ingestion/              # 数据接入层（无分析逻辑）
 │   │   ├── _http.py            # 共享 async HTTP 基类（重试 + 代理）
-│   │   ├── binance.py          # Binance Futures REST
+│   │   ├── binance.py          # Binance Futures REST + OI 历史迭代器
 │   │   ├── okx.py              # OKX V5 REST
 │   │   ├── bybit.py            # Bybit V5 REST
 │   │   ├── bitget.py           # Bitget V2 Mix REST
@@ -420,14 +436,18 @@ Price-Action-Trading-Assistant/
 │   │   ├── structure.py        # 分形 swing + BOS/CHoCH 状态机
 │   │   ├── volume.py           # Delta / CVD / VWAP + sigma 通道
 │   │   ├── profile.py          # Volume Profile (POC / VAH / VAL)
-│   │   └── zones.py            # Order Block + FVG + mitigation 跟踪
+│   │   ├── zones.py            # Order Block + FVG + mitigation 跟踪
+│   │   ├── liquidity.py        # Equal Highs/Lows 流动性池
+│   │   ├── stop_hunt.py        # Stop Hunt / 流动性扫荡检测
+│   │   ├── divergence.py       # 多指标背离（CVD/Volume/OI）
+│   │   └── wyckoff.py          # Wyckoff 阶段状态机（FSM）
 │   └── storage/                # 持久层
 │       ├── schema.py           # DuckDB DDL
 │       ├── repository.py       # Database 连接管理
 │       └── writers.py          # 批量 upsert（幂等，Polars → Arrow）
 ├── tests/
 │   ├── conftest.py             # 环境隔离 fixture
-│   └── unit/                   # 165 个单测
+│   └── unit/                   # 262 个单测
 │       ├── test_binance.py
 │       ├── test_funding_aggregator.py
 │       ├── test_okx_bybit_rest.py
@@ -437,7 +457,11 @@ Price-Action-Trading-Assistant/
 │       ├── test_structure.py
 │       ├── test_volume.py
 │       ├── test_profile.py
-│       └── test_zones.py
+│       ├── test_zones.py
+│       ├── test_liquidity.py
+│       ├── test_stop_hunt.py
+│       ├── test_divergence.py
+│       └── test_wyckoff.py
 ├── data/                       # DuckDB 文件（.gitignore）
 ├── .env.example                # 环境变量模板（含推送渠道占位）
 ├── pyproject.toml              # uv 项目配置 + 依赖
@@ -467,12 +491,18 @@ Price-Action-Trading-Assistant/
 | 1.1 | 多周期重采样 + swing + BOS/CHoCH | +16 |
 | 1.2 | Delta/CVD + VWAP + Volume Profile | +29 |
 | 1.3 | Order Block + FVG + mitigation | +19 |
-| **合计** | | **165** |
+| 2.1 | Equal Highs/Lows 流动性池 | +18 |
+| 2.2 | Stop Hunt 检测 | +20 |
+| 2.3 | 多指标背离（CVD/Volume/OI）+ OI 回填 | +27 |
+| 3.1 | Wyckoff 阶段状态机（11 状态 + 12 事件） | +28 |
+| 3.2 | 完善事件检测器（AR/ST/SOS/LPS + 1H 闸控） | +7 |
+| **合计** | | **262** |
 
 ### 下一步优先级
 
-1. **Phase 2 — 流动性引擎**：Equal Highs/Lows、Stop Hunt、量价背离
-2. **定时任务 / 常驻服务**：让数据自动持续更新（当前需手动 backfill）
-3. **Phase 3 — 情境聚合 + 推送**：Wyckoff FSM、日报生成、企微/飞书/Telegram
+1. **Phase 3 切片 3 — 情境聚合报告**：合并所有模块输出为一份可读决策报告
+2. **Phase 3 切片 4 — 告警推送**：企微 / 飞书 / Telegram
+3. **定时任务 / 常驻服务**：让数据自动持续更新（当前需手动 backfill）
+4. **Phase 4 — 复盘与回测**
 
 > *"The market does not care about your indicators. It cares about liquidity."*
