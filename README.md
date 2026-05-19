@@ -56,14 +56,14 @@ Wyckoff · Smart Money Concepts · ICT · VSA · 量价背离 · 流动性猎杀
 | ✅ 3 | `analysis/divergence` | 多指标背离（CVD / Volume / OI），indicator-agnostic 统一抽象 |
 | ⏳ 4 | 爆仓热力图 | 待 WebSocket forceOrder 流接入 |
 
-### 🚧 Phase 3 — 上下文聚合（2/4 切片完成）
+### ✅ Phase 3 — 上下文聚合 + 告警（已完成）
 
 | 切片 | 模块 | 内容 |
 |---|---|---|
 | ✅ 1 | `analysis/wyckoff` | Wyckoff 阶段状态机（11 状态 + 12 事件类型 + 纯函数 FSM） |
 | ✅ 2 | `analysis/wyckoff` | 完善事件检测器（AR/ST/SOS/LPS + 1H 闸控 + range 重锚） |
-| ⏳ 3 | 情境聚合报告 | 合并所有模块输出为一份可读决策报告 |
-| ⏳ 4 | 告警推送 | 企微 / 飞书 / Telegram |
+| ✅ 3 | `analysis/context` | 情境聚合报告（7 子上下文 + Scorecard + render_text/markdown） |
+| ✅ 4 | `notifications/` | 告警推送（Telegram / 企微 / 飞书，三 channel 并发分发） |
 
 ### ⏳ Phase 4 — 复盘与回测（未开始）
 
@@ -102,7 +102,7 @@ uv run pa analyze-divergences --timeframe 4h
 uv run pa wyckoff --timeframe 1h
 
 # 全套质量检查
-make check        # = lint + typecheck + test (262 tests)
+make check        # = lint + typecheck + test (304 tests)
 ```
 
 ### 实际输出示例
@@ -165,6 +165,8 @@ BTCUSDT  4h  current price: $76,706.70
 | `pa analyze-stop-hunts --timeframe TF` | Stop Hunt 检测 |
 | `pa analyze-divergences --timeframe TF` | CVD/Volume/OI 背离 |
 | `pa wyckoff --timeframe TF` | Wyckoff 阶段状态机 |
+| `pa context-report --timeframe TF [--htf TF]` | 情境聚合报告（系统最终交付物） |
+| `pa send-alert --timeframe TF [--htf TF] [--dry-run]` | 推送情境报告到 Telegram/企微/飞书 |
 
 所有 `analyze-*` / `wyckoff` 命令支持 `--timeframe`（5m / 15m / 1h / 4h / 1d 等）和 `--symbol` 覆盖。
 
@@ -176,7 +178,7 @@ BTCUSDT  4h  current price: $76,706.70
 pa_assistant/
 ├── config.py                # pydantic-settings
 ├── logging.py               # structlog 封装
-├── cli.py                   # typer 命令行（14 个命令）
+├── cli.py                   # typer 命令行（17 个命令）
 ├── ingestion/               # 数据接入层（无分析逻辑）
 │   ├── _http.py             # 共享 async HTTP 基类（重试 + 代理）
 │   ├── binance.py           # Binance Futures REST + OI 历史迭代器
@@ -194,13 +196,18 @@ pa_assistant/
 │   ├── liquidity.py         # Equal Highs/Lows 流动性池
 │   ├── stop_hunt.py         # Stop Hunt / 流动性扫荡检测
 │   ├── divergence.py        # 多指标背离（CVD/Volume/OI）
-│   └── wyckoff.py           # Wyckoff 阶段状态机（FSM）
+│   ├── wyckoff.py           # Wyckoff 阶段状态机（FSM）
+│   └── context.py           # 情境聚合报告（7 子上下文 + Scorecard）
+├── notifications/           # 推送通道
+│   ├── telegram.py          # Telegram Bot API
+│   ├── wechat.py            # 企业微信群机器人
+│   └── lark.py              # 飞书群自定义机器人
 └── storage/                 # 持久层
     ├── schema.py            # DuckDB DDL
     ├── repository.py        # Database 连接管理
     └── writers.py           # 批量 upsert（幂等）
 
-tests/                       # pytest 单测（262 个）
+tests/                       # pytest 单测（304 个）
 docs/                        # 设计文档
 ```
 
@@ -212,5 +219,5 @@ docs/                        # 设计文档
 2. **持久只存 1m K 线 + 5m OI**，更高 TF 通过 `resample_ohlcv()` 按需派生
 3. **抽象优先于实现** — `FundingProvider` Protocol 让 Coinglass / 自聚合 / 未来其他源零代码切换
 4. **失败可降级** — 单交易所故障不影响整体（asyncio.gather + 部分成功语义）
-5. **mypy strict + ruff + pytest** — 262 个测试，类型完全覆盖
+5. **mypy strict + ruff + pytest** — 304 个测试，类型完全覆盖
 6. **纯函数分析** — 所有 analysis 模块无 IO、无副作用，frozen-slots dataclass 输出

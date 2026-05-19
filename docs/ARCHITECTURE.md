@@ -298,16 +298,16 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 
 ### 5.5 应用服务层
 
-- **CLI 工具**（已实现 ✅）：基于 `typer`，14 个命令覆盖数据接入 + 分析全流程
+- **CLI 工具**（已实现 ✅）：基于 `typer`，17 个命令覆盖数据接入 + 分析 + 推送全流程
+- **告警引擎**（已实现 ✅）：`pa send-alert` 跑情境聚合报告 → Telegram/企微/飞书并发分发
 - **实时监控（Live Watch）**：图表实时叠加所有标注（OB、FVG、Liquidity、Wyckoff 阶段）— ⏳ 待做
-- **回放/复盘（Replay）**：按任意时间点回放，逐 K 线推进，验证系统判断与实际走势 — ⏳ 待做
-- **告警引擎（Alerts）**：基于"情境组合"触发（例如：CHoCH + 流动性扫荡 + 量价背离 同时成立）— ⏳ Phase 3
+- **回放/复盘（Replay）**：按任意时间点回放，逐 K 线推进，验证系统判断与实际走势 — ⏳ Phase 4
 - **交易日志（Journal）**：手动记录交易，系统自动关联当时的市场情境快照，用于事后复盘 — ⏳ Phase 4
 
 ### 5.6 用户交互层
 
-- **CLI 工具**（已实现 ✅）：基于 `typer`，14 个命令覆盖数据接入 + 分析全流程
-- **推送渠道**（Phase 3）：Telegram / 企业微信 / 飞书 — 配置占位已预留
+- **CLI 工具**（已实现 ✅）：基于 `typer`，17 个命令
+- **推送渠道**（已实现 ✅）：Telegram / 企业微信 / 飞书，统一 `NotificationChannel` Protocol，并发分发 + 失败降级
 - **Web Dashboard**（暂跳过）：FastAPI + TradingView Lightweight Charts — 需要时再做
 
 ---
@@ -357,7 +357,7 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 | 日志 | **structlog** | 结构化 JSON 日志，开发时 pretty-print |
 | CLI | **typer** | 类型友好、自动帮助文档 |
 | 类型检查 | **mypy strict** + **ruff** | 弥补动态类型，lint 统一 |
-| 测试 | **pytest** + `pytest-asyncio` | 单测 + 集成测（当前 262 个） |
+| 测试 | **pytest** + `pytest-asyncio` | 单测 + 集成测（当前 304 个） |
 
 **当前未使用但保留规划**：
 - Web 后端：FastAPI + Uvicorn（Phase 1 切片 4 暂跳过）
@@ -399,11 +399,11 @@ DuckDB 优势：零运维、单文件、SQL 直接查、Polars 原生互通。
 - ✅ **切片 3**：多指标背离（CVD/Volume/OI）+ OI 历史回填基础设施
 - ⏳ **切片 4**：爆仓热力图（待 WebSocket forceOrder 流接入）
 
-### **Phase 3 — 上下文聚合 + 告警（2/4 切片完成 🚧）**
+### **Phase 3 — 上下文聚合 + 告警（4/4 切片完成 ✅）**
 - ✅ **切片 1**：Wyckoff 阶段状态机（11 状态 + 12 事件 + 纯函数 FSM + confluence 评分）
 - ✅ **切片 2**：完善事件检测器（AR/ST/SOS/LPS + 1H 闸控 + range 重锚）
-- ⏳ **切片 3**：情境聚合报告（合并所有模块输出为一份可读决策报告）
-- ⏳ **切片 4**：告警推送（企微 / 飞书 / Telegram）
+- ✅ **切片 3**：情境聚合报告（7 子上下文 + Scorecard + render_text/markdown）
+- ✅ **切片 4**：告警推送（Telegram / 企微 / 飞书，统一 Protocol + 并发分发）
 
 ### **Phase 4 — 复盘与回测**
 - K 线回放系统
@@ -422,7 +422,7 @@ Price-Action-Trading-Assistant/
 │   ├── __init__.py
 │   ├── config.py               # pydantic-settings 配置管理
 │   ├── logging.py              # structlog 封装
-│   ├── cli.py                  # typer CLI（14 个命令）
+│   ├── cli.py                  # typer CLI（17 个命令）
 │   ├── ingestion/              # 数据接入层（无分析逻辑）
 │   │   ├── _http.py            # 共享 async HTTP 基类（重试 + 代理）
 │   │   ├── binance.py          # Binance Futures REST + OI 历史迭代器
@@ -440,14 +440,19 @@ Price-Action-Trading-Assistant/
 │   │   ├── liquidity.py        # Equal Highs/Lows 流动性池
 │   │   ├── stop_hunt.py        # Stop Hunt / 流动性扫荡检测
 │   │   ├── divergence.py       # 多指标背离（CVD/Volume/OI）
-│   │   └── wyckoff.py          # Wyckoff 阶段状态机（FSM）
+│   │   ├── wyckoff.py          # Wyckoff 阶段状态机（FSM）
+│   │   └── context.py          # 情境聚合报告（7 子上下文 + Scorecard）
+│   ├── notifications/          # 推送通道
+│   │   ├── telegram.py         # Telegram Bot API
+│   │   ├── wechat.py           # 企业微信群机器人
+│   │   └── lark.py             # 飞书群自定义机器人
 │   └── storage/                # 持久层
 │       ├── schema.py           # DuckDB DDL
 │       ├── repository.py       # Database 连接管理
 │       └── writers.py          # 批量 upsert（幂等，Polars → Arrow）
 ├── tests/
 │   ├── conftest.py             # 环境隔离 fixture
-│   └── unit/                   # 262 个单测
+│   └── unit/                   # 304 个单测
 │       ├── test_binance.py
 │       ├── test_funding_aggregator.py
 │       ├── test_okx_bybit_rest.py
@@ -461,7 +466,9 @@ Price-Action-Trading-Assistant/
 │       ├── test_liquidity.py
 │       ├── test_stop_hunt.py
 │       ├── test_divergence.py
-│       └── test_wyckoff.py
+│       ├── test_wyckoff.py
+│       ├── test_context.py
+│       └── test_notifications.py
 ├── data/                       # DuckDB 文件（.gitignore）
 ├── .env.example                # 环境变量模板（含推送渠道占位）
 ├── pyproject.toml              # uv 项目配置 + 依赖
@@ -496,13 +503,14 @@ Price-Action-Trading-Assistant/
 | 2.3 | 多指标背离（CVD/Volume/OI）+ OI 回填 | +27 |
 | 3.1 | Wyckoff 阶段状态机（11 状态 + 12 事件） | +28 |
 | 3.2 | 完善事件检测器（AR/ST/SOS/LPS + 1H 闸控） | +7 |
-| **合计** | | **262** |
+| 3.3 | 情境聚合报告（7 子上下文 + Scorecard + 渲染器） | +27 |
+| 3.4 | 告警推送（Telegram / 企微 / 飞书） | +15 |
+| **合计** | | **304** |
 
 ### 下一步优先级
 
-1. **Phase 3 切片 3 — 情境聚合报告**：合并所有模块输出为一份可读决策报告
-2. **Phase 3 切片 4 — 告警推送**：企微 / 飞书 / Telegram
-3. **定时任务 / 常驻服务**：让数据自动持续更新（当前需手动 backfill）
-4. **Phase 4 — 复盘与回测**
+1. **Phase 2 切片 4 — 爆仓热力图**：待 Binance WebSocket forceOrder 流接入
+2. **定时任务 / 常驻服务**：让数据自动持续更新 + 定时推送告警
+3. **Phase 4 — 复盘与回测**：K 线回放 + 交易日志关联情境快照
 
 > *"The market does not care about your indicators. It cares about liquidity."*
