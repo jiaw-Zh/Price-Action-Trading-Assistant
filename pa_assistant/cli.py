@@ -1473,7 +1473,7 @@ def send_alert(
             htf_trend=htf_trend,  # type: ignore[arg-type]
             htf_events=htf_events,
         ),
-        wyckoff=build_wyckoff_context(wyckoff_snap),
+        wyckoff=build_wyckoff_context(wyckoff_snap, language="zh"),
         liquidity=build_liquidity_map(liquidity_levels, current_price=last_close),
         zones=build_zone_context(order_blocks, fvgs, current_price=last_close),
         flow=build_flow_context(
@@ -1487,14 +1487,17 @@ def send_alert(
         funding=build_funding_context(
             oi=oi_now, oi_24h_ago=oi_24h_ago, funding_rate=funding_rate
         ),
+        language="zh",
     )
 
     # ----- 2. build the notification message -----
-    bias = report.scorecard.net_bias.upper()
+    bias_zh = {"bullish": "看多", "bearish": "看空", "neutral": "中性"}[
+        report.scorecard.net_bias
+    ]
     derived_title = (
-        title or f"[{sym} {timeframe}] {bias} bias @ ${last_close:,.0f}"
+        title or f"[{sym} {timeframe}] 综合倾向: {bias_zh} @ ${last_close:,.0f}"
     )
-    body = render_markdown(report)
+    body = render_markdown(report, language="zh")
     message = NotificationMessage(title=derived_title, body=body, format="markdown")
 
     if dry_run:

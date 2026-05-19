@@ -55,6 +55,36 @@ TrendAlignment = Literal[
     "htf_bull_ltf_bear",  # HTF up, working showing pullback / reversal
     "neutral",  # no clear trend on at least one side
 ]
+Language = Literal["en", "zh"]
+
+
+# ---------------------------------------------------------------------------
+# Translation tables (en -> zh) used by Chinese-language renderers
+# ---------------------------------------------------------------------------
+
+_ZH_BIAS: dict[str, str] = {"bullish": "看多", "bearish": "看空", "neutral": "中性"}
+_ZH_DIRECTION: dict[str, str] = {"up": "上行", "down": "下行", "none": "无方向"}
+_ZH_ALIGNMENT: dict[str, str] = {
+    "aligned_bull": "双周期一致看多",
+    "aligned_bear": "双周期一致看空",
+    "htf_bear_ltf_bull": "HTF 看空 / 工作周期看多",
+    "htf_bull_ltf_bear": "HTF 看多 / 工作周期看空",
+    "neutral": "中性",
+}
+_ZH_INDICATOR: dict[str, str] = {"cvd": "CVD", "volume": "成交量", "oi": "OI"}
+_ZH_PHASE: dict[str, str] = {
+    "neutral": "中性",
+    "accumulation_phase_a": "累积阶段 A",
+    "accumulation_phase_b": "累积阶段 B",
+    "accumulation_phase_c": "累积阶段 C",
+    "accumulation_phase_d": "累积阶段 D",
+    "accumulation_phase_e": "累积阶段 E",
+    "distribution_phase_a": "派发阶段 A",
+    "distribution_phase_b": "派发阶段 B",
+    "distribution_phase_c": "派发阶段 C",
+    "distribution_phase_d": "派发阶段 D",
+    "distribution_phase_e": "派发阶段 E",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,7 +405,9 @@ def build_funding_context(
     )
 
 
-def build_wyckoff_context(snapshot: WyckoffSnapshot) -> WyckoffContext:
+def build_wyckoff_context(
+    snapshot: WyckoffSnapshot, *, language: Language = "en"
+) -> WyckoffContext:
     """Wrap a snapshot with a forward-looking watch hint.
 
     The hint is phase-aware: it tells the user what event would advance
@@ -390,7 +422,27 @@ def build_wyckoff_context(snapshot: WyckoffSnapshot) -> WyckoffContext:
     def _fmt(p: float | None) -> str:
         return f"${p:,.0f}" if p is not None else "?"
 
-    # Per-phase forward-looking watch
+    if language == "zh":
+        hints_zh: dict[WyckoffPhase, str] = {
+            WyckoffPhase.NEUTRAL: "等待高量级 climax 事件 (SC/BC) 定义区间",
+            WyckoffPhase.ACC_A: f"等待 AR 自动反弹突破 {_fmt(rl)} 形成区间上沿",
+            WyckoffPhase.ACC_B: (
+                f"等待 Spring 跌破 {_fmt(rl)} 或突破 {_fmt(rh)}"
+            ),
+            WyckoffPhase.ACC_C: f"等待 SOS (Sign of Strength) 向上突破 {_fmt(rh)}",
+            WyckoffPhase.ACC_D: f"等待 LPS (Last Point of Support) 在 {_fmt(rh)} 之上守住",
+            WyckoffPhase.ACC_E: "上行趋势进行中——继续跟踪结构延续",
+            WyckoffPhase.DIST_A: f"等待 AR 自动回调跌破 {_fmt(rh)} 形成区间下沿",
+            WyckoffPhase.DIST_B: (
+                f"等待 UTAD 突破 {_fmt(rh)} 或跌破 {_fmt(rl)}"
+            ),
+            WyckoffPhase.DIST_C: f"等待 SOW (Sign of Weakness) 向下跌破 {_fmt(rl)}",
+            WyckoffPhase.DIST_D: f"等待 LPSY (Last Point of Supply) 在 {_fmt(rl)} 之下守住",
+            WyckoffPhase.DIST_E: "下行趋势进行中——继续跟踪结构延续",
+        }
+        return WyckoffContext(snapshot=snapshot, next_watch=hints_zh[phase])
+
+    # Per-phase forward-looking watch (English)
     hints: dict[WyckoffPhase, str] = {
         WyckoffPhase.NEUTRAL: "Watch for a high-volume climax (SC or BC) to define a range",
         WyckoffPhase.ACC_A: f"Watch for AR (auto-rally) above {_fmt(rl)} to define range high",
@@ -433,6 +485,7 @@ def build_scorecard(
     stop_hunts: StopHuntContext,
     funding: FundingContext,
     min_divergence_strength: float = 0.4,
+    language: Language = "en",
 ) -> Scorecard:
     """Produce bullish / bearish factor lists from the sub-contexts.
 
@@ -454,54 +507,105 @@ def build_scorecard(
 
     bullish: list[str] = []
     bearish: list[str] = []
+    zh = language == "zh"
 
     # 1. Wyckoff
     phase = wyckoff.snapshot.phase
     if phase in {WyckoffPhase.ACC_C, WyckoffPhase.ACC_D, WyckoffPhase.ACC_E}:
-        bullish.append(f"Wyckoff {phase.value} (accumulation committed)")
+        if zh:
+            bullish.append(f"Wyckoff {_ZH_PHASE[phase.value]} (累积阶段已确认)")
+        else:
+            bullish.append(f"Wyckoff {phase.value} (accumulation committed)")
     elif phase == WyckoffPhase.ACC_B:
-        bullish.append("Wyckoff Phase B (supply diminishing)")
+        bullish.append(
+            "Wyckoff 阶段 B (供给减少)" if zh else "Wyckoff Phase B (supply diminishing)"
+        )
     elif phase == WyckoffPhase.ACC_A:
-        bullish.append("Wyckoff Phase A (selling climax registered)")
+        bullish.append(
+            "Wyckoff 阶段 A (卖出高潮已记录)"
+            if zh
+            else "Wyckoff Phase A (selling climax registered)"
+        )
     elif phase in {WyckoffPhase.DIST_C, WyckoffPhase.DIST_D, WyckoffPhase.DIST_E}:
-        bearish.append(f"Wyckoff {phase.value} (distribution committed)")
+        if zh:
+            bearish.append(f"Wyckoff {_ZH_PHASE[phase.value]} (派发阶段已确认)")
+        else:
+            bearish.append(f"Wyckoff {phase.value} (distribution committed)")
     elif phase == WyckoffPhase.DIST_B:
-        bearish.append("Wyckoff Phase B (demand diminishing)")
+        bearish.append(
+            "Wyckoff 阶段 B (需求减少)" if zh else "Wyckoff Phase B (demand diminishing)"
+        )
     elif phase == WyckoffPhase.DIST_A:
-        bearish.append("Wyckoff Phase A (buying climax registered)")
+        bearish.append(
+            "Wyckoff 阶段 A (买入高潮已记录)"
+            if zh
+            else "Wyckoff Phase A (buying climax registered)"
+        )
 
     # 2. Trend alignment
     if trend.alignment == "aligned_bull":
-        bullish.append("HTF + working timeframe both trending up")
+        bullish.append(
+            "HTF 与工作周期均向上" if zh else "HTF + working timeframe both trending up"
+        )
     elif trend.alignment == "aligned_bear":
-        bearish.append("HTF + working timeframe both trending down")
+        bearish.append(
+            "HTF 与工作周期均向下" if zh else "HTF + working timeframe both trending down"
+        )
     elif trend.alignment == "htf_bear_ltf_bull":
-        bullish.append("Working TF reversal candidate against HTF downtrend")
+        bullish.append(
+            "工作周期可能反转, 逆于 HTF 下行"
+            if zh
+            else "Working TF reversal candidate against HTF downtrend"
+        )
     elif trend.alignment == "htf_bull_ltf_bear":
-        bearish.append("Working TF reversal candidate against HTF uptrend")
+        bearish.append(
+            "工作周期可能反转, 逆于 HTF 上行"
+            if zh
+            else "Working TF reversal candidate against HTF uptrend"
+        )
 
     # 3. Stop hunts
     if stop_hunts.most_recent is not None:
         h = stop_hunts.most_recent
         if h.side == "low":
-            bullish.append(
-                f"Recent confirmed Spring below ${h.pool_price:,.0f} "
-                f"({h.wick_ratio:.0%} wick rejection)"
-            )
+            if zh:
+                bullish.append(
+                    f"近期确认 Spring 跌破 ${h.pool_price:,.0f} "
+                    f"({h.wick_ratio:.0%} 长针拒绝)"
+                )
+            else:
+                bullish.append(
+                    f"Recent confirmed Spring below ${h.pool_price:,.0f} "
+                    f"({h.wick_ratio:.0%} wick rejection)"
+                )
         else:
-            bearish.append(
-                f"Recent confirmed UTAD above ${h.pool_price:,.0f} "
-                f"({h.wick_ratio:.0%} wick rejection)"
-            )
+            if zh:
+                bearish.append(
+                    f"近期确认 UTAD 突破 ${h.pool_price:,.0f} "
+                    f"({h.wick_ratio:.0%} 长针拒绝)"
+                )
+            else:
+                bearish.append(
+                    f"Recent confirmed UTAD above ${h.pool_price:,.0f} "
+                    f"({h.wick_ratio:.0%} wick rejection)"
+                )
 
     # 4. Divergences
     for div in flow.recent_divergences:
         if div.strength < min_divergence_strength:
             continue
-        msg = (
-            f"{div.indicator} {div.side} divergence ({div.strength:.0%}) "
-            f"at ${div.swing_price:,.0f}"
-        )
+        if zh:
+            ind_zh = _ZH_INDICATOR.get(div.indicator, div.indicator)
+            side_zh = _ZH_BIAS.get(div.side, div.side)
+            msg = (
+                f"{ind_zh} {side_zh}背离 ({div.strength:.0%}) "
+                f"于 ${div.swing_price:,.0f}"
+            )
+        else:
+            msg = (
+                f"{div.indicator} {div.side} divergence ({div.strength:.0%}) "
+                f"at ${div.swing_price:,.0f}"
+            )
         if div.side == "bullish":
             bullish.append(msg)
         else:
@@ -515,32 +619,64 @@ def build_scorecard(
     ]
     bull_obs_below = [ob for ob in zones.active_order_blocks if ob.direction == "bullish"]
     if len(bear_obs_above) >= 2:
-        bearish.append(f"{len(bear_obs_above)} active bearish Order Block(s)")
+        if zh:
+            bearish.append(f"{len(bear_obs_above)} 个生效中的看跌订单块")
+        else:
+            bearish.append(f"{len(bear_obs_above)} active bearish Order Block(s)")
     if len(bull_obs_below) >= 2:
-        bullish.append(f"{len(bull_obs_below)} active bullish Order Block(s)")
+        if zh:
+            bullish.append(f"{len(bull_obs_below)} 个生效中的看涨订单块")
+        else:
+            bullish.append(f"{len(bull_obs_below)} active bullish Order Block(s)")
 
     # 6. Liquidity magnets — untested pools above price = upside magnet
     if len(liquidity.above) >= 2 and len(liquidity.below) == 0:
-        bullish.append(f"{len(liquidity.above)} untested liquidity pool(s) above (magnets)")
+        if zh:
+            bullish.append(f"上方 {len(liquidity.above)} 个未触发流动性池 (磁吸)")
+        else:
+            bullish.append(
+                f"{len(liquidity.above)} untested liquidity pool(s) above (magnets)"
+            )
     elif len(liquidity.below) >= 2 and len(liquidity.above) == 0:
-        bearish.append(f"{len(liquidity.below)} untested liquidity pool(s) below (magnets)")
+        if zh:
+            bearish.append(f"下方 {len(liquidity.below)} 个未触发流动性池 (磁吸)")
+        else:
+            bearish.append(
+                f"{len(liquidity.below)} untested liquidity pool(s) below (magnets)"
+            )
 
     # 7. CVD trend
     if flow.cvd_trend == "up":
-        bullish.append(f"CVD rising over recent bars ({flow.cvd_recent_change:+,.0f})")
+        if zh:
+            bullish.append(f"CVD 近期上行 ({flow.cvd_recent_change:+,.0f})")
+        else:
+            bullish.append(f"CVD rising over recent bars ({flow.cvd_recent_change:+,.0f})")
     elif flow.cvd_trend == "down":
-        bearish.append(f"CVD falling over recent bars ({flow.cvd_recent_change:+,.0f})")
+        if zh:
+            bearish.append(f"CVD 近期下行 ({flow.cvd_recent_change:+,.0f})")
+        else:
+            bearish.append(f"CVD falling over recent bars ({flow.cvd_recent_change:+,.0f})")
 
     # 8. Funding rate extreme (contrarian)
     if funding.funding_rate is not None:
         if funding.funding_rate <= _FUNDING_BULLISH_EXTREME:
-            bullish.append(
-                f"Funding rate negative extreme ({funding.funding_rate:.4f}, contrarian bullish)"
-            )
+            if zh:
+                bullish.append(
+                    f"资金费率负向极值 ({funding.funding_rate:.4f}, 反向看多)"
+                )
+            else:
+                bullish.append(
+                    f"Funding rate negative extreme ({funding.funding_rate:.4f}, contrarian bullish)"
+                )
         elif funding.funding_rate >= _FUNDING_BEARISH_EXTREME:
-            bearish.append(
-                f"Funding rate positive extreme ({funding.funding_rate:.4f}, contrarian bearish)"
-            )
+            if zh:
+                bearish.append(
+                    f"资金费率正向极值 ({funding.funding_rate:.4f}, 反向看空)"
+                )
+            else:
+                bearish.append(
+                    f"Funding rate positive extreme ({funding.funding_rate:.4f}, contrarian bearish)"
+                )
 
     return Scorecard(bullish_factors=tuple(bullish), bearish_factors=tuple(bearish))
 
@@ -563,6 +699,7 @@ def build_context_report(
     flow: FlowContext,
     stop_hunts: StopHuntContext,
     funding: FundingContext,
+    language: Language = "en",
 ) -> ContextReport:
     """Compose the full ContextReport from already-built sub-contexts.
 
@@ -604,6 +741,7 @@ def build_context_report(
         flow=flow,
         stop_hunts=stop_hunts,
         funding=funding,
+        language=language,
     )
 
     return ContextReport(
@@ -631,8 +769,10 @@ def build_context_report(
 # ---------------------------------------------------------------------------
 
 
-def _format_phase(phase_value: str) -> str:
-    """Pretty-print 'accumulation_phase_b' -> 'Accumulation Phase B'."""
+def _format_phase(phase_value: str, *, language: Language = "en") -> str:
+    """Pretty-print 'accumulation_phase_b' -> 'Accumulation Phase B' (or 累积阶段 B)."""
+    if language == "zh":
+        return _ZH_PHASE.get(phase_value, phase_value)
     if phase_value == "neutral":
         return "Neutral"
     side, _, sub = phase_value.partition("_phase_")
@@ -799,7 +939,7 @@ def render_text(report: ContextReport) -> str:
     return "\n".join(lines)
 
 
-def render_markdown(report: ContextReport) -> str:
+def render_markdown(report: ContextReport, *, language: Language = "en") -> str:
     """Render ContextReport as markdown for messaging platforms.
 
     Uses GitHub-flavored markdown subset (headings, bold, lists) — broadly
@@ -809,6 +949,7 @@ def render_markdown(report: ContextReport) -> str:
     """
     p = report.current_price
     out: list[str] = []
+    zh = language == "zh"
 
     out.append(
         f"**{report.symbol} {report.timeframe}** ${p:,.2f} "
@@ -818,35 +959,65 @@ def render_markdown(report: ContextReport) -> str:
 
     # Wyckoff (lead with the headline)
     snap = report.wyckoff.snapshot
-    phase_label = _format_phase(snap.phase.value)
-    out.append(f"**Wyckoff:** {phase_label} (confidence {snap.confidence:.0%})")
+    phase_label = _format_phase(snap.phase.value, language=language)
+    if zh:
+        out.append(f"**Wyckoff:** {phase_label} (置信度 {snap.confidence:.0%})")
+    else:
+        out.append(f"**Wyckoff:** {phase_label} (confidence {snap.confidence:.0%})")
     if snap.range_low is not None or snap.range_high is not None:
         rl = f"${snap.range_low:,.0f}" if snap.range_low is not None else "?"
         rh = f"${snap.range_high:,.0f}" if snap.range_high is not None else "?"
-        out.append(f"  Range: {rl} - {rh}")
-    out.append(f"  Next: {report.wyckoff.next_watch}")
+        if zh:
+            out.append(f"  区间: {rl} - {rh}")
+        else:
+            out.append(f"  Range: {rl} - {rh}")
+    if zh:
+        out.append(f"  下一步: {report.wyckoff.next_watch}")
+    else:
+        out.append(f"  Next: {report.wyckoff.next_watch}")
     out.append("")
 
     # Trend
-    trend_line = f"**Trend:** {report.trend.alignment}"
-    if report.trend.htf_timeframe:
-        trend_line += (
-            f" (HTF {report.trend.htf_timeframe} {report.trend.htf_trend}, "
-            f"{report.trend.working_timeframe} {report.trend.working_trend})"
-        )
+    if zh:
+        align_label = _ZH_ALIGNMENT.get(report.trend.alignment, report.trend.alignment)
+        trend_line = f"**趋势:** {align_label}"
+        if report.trend.htf_timeframe:
+            htf_dir = _ZH_DIRECTION.get(report.trend.htf_trend, report.trend.htf_trend)
+            wk_dir = _ZH_DIRECTION.get(
+                report.trend.working_trend, report.trend.working_trend
+            )
+            trend_line += (
+                f" (HTF {report.trend.htf_timeframe} {htf_dir}, "
+                f"{report.trend.working_timeframe} {wk_dir})"
+            )
+    else:
+        trend_line = f"**Trend:** {report.trend.alignment}"
+        if report.trend.htf_timeframe:
+            trend_line += (
+                f" (HTF {report.trend.htf_timeframe} {report.trend.htf_trend}, "
+                f"{report.trend.working_timeframe} {report.trend.working_trend})"
+            )
     out.append(trend_line)
     out.append("")
 
     # Scorecard (the actionable bit)
-    out.append(f"**Net bias: {report.scorecard.net_bias.upper()}**")
+    bias_label = (
+        _ZH_BIAS.get(report.scorecard.net_bias, report.scorecard.net_bias)
+        if zh
+        else report.scorecard.net_bias.upper()
+    )
+    if zh:
+        out.append(f"**综合倾向: {bias_label}**")
+    else:
+        out.append(f"**Net bias: {bias_label}**")
     out.append("")
     if report.scorecard.bullish_factors:
-        out.append("Bullish factors:")
+        out.append("看多因素: " if zh else "Bullish factors:")
         for f in report.scorecard.bullish_factors:
             out.append(f"- {f}")
         out.append("")
     if report.scorecard.bearish_factors:
-        out.append("Bearish factors:")
+        out.append("看空因素: " if zh else "Bearish factors:")
         for f in report.scorecard.bearish_factors:
             out.append(f"- {f}")
         out.append("")
@@ -857,17 +1028,29 @@ def render_markdown(report: ContextReport) -> str:
         or report.invalidation_short is not None
         or report.nearest_magnet is not None
     ):
-        out.append("**Key levels:**")
+        out.append("**关键价位:**" if zh else "**Key levels:**")
         if report.invalidation_long is not None:
-            out.append(f"- Long invalidation: close < ${report.invalidation_long:,.0f}")
+            if zh:
+                out.append(f"- 做多失效: 收盘 < ${report.invalidation_long:,.0f}")
+            else:
+                out.append(
+                    f"- Long invalidation: close < ${report.invalidation_long:,.0f}"
+                )
         if report.invalidation_short is not None:
-            out.append(
-                f"- Short invalidation: close > ${report.invalidation_short:,.0f}"
-            )
+            if zh:
+                out.append(f"- 做空失效: 收盘 > ${report.invalidation_short:,.0f}")
+            else:
+                out.append(
+                    f"- Short invalidation: close > ${report.invalidation_short:,.0f}"
+                )
         if report.nearest_magnet is not None:
-            side = "up" if report.nearest_magnet > p else "down"
-            out.append(
-                f"- Nearest magnet: ${report.nearest_magnet:,.0f} ({side})"
-            )
+            if zh:
+                side = "上方" if report.nearest_magnet > p else "下方"
+                out.append(f"- 最近磁吸: ${report.nearest_magnet:,.0f} ({side})")
+            else:
+                side = "up" if report.nearest_magnet > p else "down"
+                out.append(
+                    f"- Nearest magnet: ${report.nearest_magnet:,.0f} ({side})"
+                )
 
     return "\n".join(out)
