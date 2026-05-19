@@ -1110,5 +1110,219 @@ def _format_event_type(event_type: object) -> str:
     return pretty.get(s, s)
 
 
+@app.command(name="context-report")
+def context_report(
+    timeframe: str = typer.Option("1h", help="Working timeframe (resample 1m to this)."),
+    htf: str | None = typer.Option(
+        None,
+        help="Optional higher timeframe for trend alignment (e.g. 4h, 1d).",
+    ),
+    swing_lookback: int = typer.Option(3, min=1, help="Fractal lookback for swings."),
+    volume_climax_z: float = typer.Option(
+        2.0, min=0.5, help="Z-score for Wyckoff volume climax detection."
+    ),
+    eq_tolerance_bps: float = typer.Option(
+        10.0, min=0.0, help="Tolerance for liquidity pool clustering (bps)."
+    ),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Generate the umbrella market context report (the headline command)."""
+    import duckdb
+
+    from pa_assistant.analysis import (
+        analyze_wyckoff,
+        build_context_report,
+        build_flow_context,
+        build_funding_context,
+        build_liquidity_map,
+        build_stop_hunt_context,
+        build_trend_context,
+        build_wyckoff_context,
+        build_zone_context,
+        compute_delta,
+        compute_volume_profile,
+        compute_vwap,
+        detect_divergences,
+        detect_fvgs,
+        detect_liquidity_levels,
+        detect_order_blocks,
+        detect_stop_hunts,
+        detect_structure_events,
+        detect_swings,
+        render_text,
+        resample_ohlcv,
+    )
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    # ------------------------------------------------------------------
+    # 1. Load raw data from DuckDB
+    # ------------------------------------------------------------------
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        klines = conn.execute(
+            "SELECT open_time, open, high, low, close, volume, "
+            "quote_volume, taker_buy_base "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [sym],
+        ).pl()
+        oi_df = conn.execute(
+            "SELECT timestamp AS open_time, open_interest AS oi "
+            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
+            [sym],
+        ).pl()
+        funding_row = conn.execute(
+            "SELECT weighted_rate FROM funding_weighted "
+            "WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+            [sym],
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if klines.is_empty():
+        typer.secho(
+            f"No klines for {sym}. Run `pa backfill` first.", fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1)
+
+    # ------------------------------------------------------------------
+    # 2. Resample to working timeframe + derive flow columns
+    # ------------------------------------------------------------------
+    working = resample_ohlcv(klines, timeframe)
+    working = compute_delta(working)
+    if not oi_df.is_empty():
+        working = working.sort("open_time").join_asof(
+            oi_df.sort("open_time"), on="open_time", strategy="backward"
+        )
+    last_close = float(working.row(working.height - 1, named=True)["close"])
+    last_ts = working.row(working.height - 1, named=True)["open_time"]
+
+    # ------------------------------------------------------------------
+    # 3. Run primitive detectors on working TF
+    # ------------------------------------------------------------------
+    annotated = detect_swings(working, lookback=swing_lookback)
+    structure_events = detect_structure_events(annotated)
+    liquidity_levels = detect_liquidity_levels(
+        working, tolerance_bps=eq_tolerance_bps
+    )
+    stop_hunts = detect_stop_hunts(working, liquidity_levels)
+    order_blocks = detect_order_blocks(working, structure_events)
+    fvgs = detect_fvgs(working)
+    divergences = detect_divergences(working)
+    wyckoff_snaps = analyze_wyckoff(
+        working,
+        swing_lookback=swing_lookback,
+        volume_climax_z=volume_climax_z,
+        eq_tolerance_bps=eq_tolerance_bps,
+        divergences=divergences,
+    )
+    wyckoff_snap = wyckoff_snaps[-1]
+
+    # VWAP and Volume Profile
+    vwap_df = compute_vwap(working)
+    vwap = (
+        float(vwap_df.row(vwap_df.height - 1, named=True)["vwap"])
+        if "vwap" in vwap_df.columns and vwap_df.height > 0
+        else None
+    )
+    profile = compute_volume_profile(working)
+    poc = profile.poc if profile is not None else None
+
+    # ------------------------------------------------------------------
+    # 4. Optional HTF trend
+    # ------------------------------------------------------------------
+    htf_trend = "none"
+    htf_events: list[Any] = []
+    if htf is not None:
+        htf_df = resample_ohlcv(klines, htf)
+        htf_annotated = detect_swings(htf_df, lookback=swing_lookback)
+        htf_events = detect_structure_events(htf_annotated)
+        # Most recent BOS/CHoCH determines trend
+        if htf_events:
+            last = htf_events[-1]
+            if last.event_type in {"BOS_up", "CHoCH_up"}:
+                htf_trend = "up"
+            elif last.event_type in {"BOS_down", "CHoCH_down"}:
+                htf_trend = "down"
+
+    # Working-TF trend from latest structure event
+    working_trend = "none"
+    if structure_events:
+        last = structure_events[-1]
+        if last.event_type in {"BOS_up", "CHoCH_up"}:
+            working_trend = "up"
+        elif last.event_type in {"BOS_down", "CHoCH_down"}:
+            working_trend = "down"
+
+    # ------------------------------------------------------------------
+    # 5. OI 24h ago: lookup nearest OI sample 24h before now
+    # ------------------------------------------------------------------
+    oi_now = None
+    oi_24h_ago = None
+    if not oi_df.is_empty():
+        oi_now_row = oi_df.row(oi_df.height - 1, named=True)
+        oi_now = float(oi_now_row["oi"])
+        from datetime import timedelta as _td
+
+        target = oi_now_row["open_time"] - _td(hours=24)
+        # find row closest to target without going past it
+        candidates = oi_df.filter(oi_df["open_time"] <= target)
+        if candidates.height > 0:
+            oi_24h_ago = float(candidates.row(candidates.height - 1, named=True)["oi"])
+
+    funding_rate = float(funding_row[0]) if funding_row else None
+
+    # ------------------------------------------------------------------
+    # 6. Build sub-contexts
+    # ------------------------------------------------------------------
+    cvd_series = (
+        working.get_column("cvd").to_list() if "cvd" in working.columns else []
+    )
+
+    trend_ctx = build_trend_context(
+        working_timeframe=timeframe,
+        working_trend=working_trend,  # type: ignore[arg-type]
+        working_events=structure_events,
+        htf_timeframe=htf,
+        htf_trend=htf_trend,  # type: ignore[arg-type]
+        htf_events=htf_events,
+    )
+    wyckoff_ctx = build_wyckoff_context(wyckoff_snap)
+    liquidity_map = build_liquidity_map(liquidity_levels, current_price=last_close)
+    zone_ctx = build_zone_context(order_blocks, fvgs, current_price=last_close)
+    flow_ctx = build_flow_context(
+        cvd_series=cvd_series,
+        vwap=vwap,
+        current_price=last_close,
+        poc=poc,
+        divergences=divergences,
+    )
+    stop_hunt_ctx = build_stop_hunt_context(stop_hunts)
+    funding_ctx = build_funding_context(
+        oi=oi_now, oi_24h_ago=oi_24h_ago, funding_rate=funding_rate
+    )
+
+    # ------------------------------------------------------------------
+    # 7. Compose & render
+    # ------------------------------------------------------------------
+    report = build_context_report(
+        timestamp=last_ts,
+        symbol=sym,
+        timeframe=timeframe,
+        current_price=last_close,
+        trend=trend_ctx,
+        wyckoff=wyckoff_ctx,
+        liquidity=liquidity_map,
+        zones=zone_ctx,
+        flow=flow_ctx,
+        stop_hunts=stop_hunt_ctx,
+        funding=funding_ctx,
+    )
+
+    typer.echo(render_text(report))
+
+
 if __name__ == "__main__":
     app()
