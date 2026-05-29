@@ -416,21 +416,31 @@ def analyze_structure(
         fg=typer.colors.CYAN,
         bold=True,
     )
-    typer.echo(f"  swings:  {n_high} highs · {n_low} lows  (lookback={lookback})")
-    typer.echo(f"  events:  {len(events)} total")
+    typer.echo(f"  swing:  {n_high} 个高点 · {n_low} 个低点  (lookback={lookback})")
+    typer.echo(f"  事件:   {len(events)} 个")
 
     if not events:
         return
 
     typer.echo("")
-    typer.secho("  Recent structure events:", bold=True)
+    typer.secho("  近期结构事件:", bold=True)
+    event_type_zh = {
+        "BOS_up": "BOS 上破",
+        "BOS_down": "BOS 下破",
+        "CHoCH_up": "CHoCH 上破",
+        "CHoCH_down": "CHoCH 下破",
+    }
+    trend_zh = {"up": "上升", "down": "下降", "none": "无"}
     for ev in events[-last:]:
         is_up = "_up" in ev.event_type
         arrow = "↑" if is_up else "↓"
         colour = typer.colors.GREEN if is_up else typer.colors.RED
+        ev_zh = event_type_zh.get(ev.event_type, ev.event_type)
+        before_zh = trend_zh.get(ev.trend_before, ev.trend_before)
+        after_zh = trend_zh.get(ev.trend_after, ev.trend_after)
         typer.secho(
-            f"    {ev.timestamp:%Y-%m-%d %H:%M}  {arrow} {ev.event_type:11s}  "
-            f"@ ${ev.level:>10,.2f}   ({ev.trend_before} → {ev.trend_after})",
+            f"    {ev.timestamp:%Y-%m-%d %H:%M}  {arrow} {ev_zh:8s} "
+            f"@ ${ev.level:>10,.2f}   ({before_zh} → {after_zh})",
             fg=colour,
         )
 
@@ -483,51 +493,51 @@ def analyze_volume(
     last_close = float(last["close"])
 
     typer.secho(
-        f"{sym}  {timeframe}  ({bars} most recent bars)",
+        f"{sym}  {timeframe}  (最近 {bars} 根 K 线)",
         fg=typer.colors.CYAN,
         bold=True,
     )
     typer.echo(
-        f"  range:    {with_delta.row(0, named=True)['open_time']:%Y-%m-%d %H:%M}"
+        f"  区间:    {with_delta.row(0, named=True)['open_time']:%Y-%m-%d %H:%M}"
         f"  ->  {last['open_time']:%Y-%m-%d %H:%M}"
     )
-    typer.echo(f"  close:    ${last_close:>10,.2f}")
+    typer.echo(f"  收盘:    ${last_close:>10,.2f}")
 
     typer.echo("")
-    typer.secho("  Order-flow (delta / CVD)", bold=True)
-    typer.echo(f"    last bar delta:    {last['delta']:>+14,.4f}")
-    typer.echo(f"    CVD over window:   {cvd_change:>+14,.4f}")
-    direction = "buyers in control" if cvd_change > 0 else "sellers in control"
-    typer.echo(f"    interpretation:    {direction}")
+    typer.secho("  订单流 (Delta / CVD)", bold=True)
+    typer.echo(f"    最近一根 Delta:    {last['delta']:>+14,.4f}")
+    typer.echo(f"    窗口内 CVD:        {cvd_change:>+14,.4f}")
+    direction = "买方主导" if cvd_change > 0 else "卖方主导"
+    typer.echo(f"    解读:              {direction}")
 
     typer.echo("")
     typer.secho("  VWAP", bold=True)
-    typer.echo(f"    vwap:              ${last['vwap']:>10,.2f}")
+    typer.echo(f"    VWAP:              ${last['vwap']:>10,.2f}")
     typer.echo(
-        f"    1-sigma band:      ${last['vwap_lower_1']:>10,.2f}"
+        f"    1 标准差区间:       ${last['vwap_lower_1']:>10,.2f}"
         f"  -  ${last['vwap_upper_1']:>10,.2f}"
     )
     typer.echo(
-        f"    2-sigma band:      ${last['vwap_lower_2']:>10,.2f}"
+        f"    2 标准差区间:       ${last['vwap_lower_2']:>10,.2f}"
         f"  -  ${last['vwap_upper_2']:>10,.2f}"
     )
-    pos = "above" if last_close > last["vwap"] else "below"
-    typer.echo(f"    price is {pos} VWAP")
+    pos = "在 VWAP 上方" if last_close > last["vwap"] else "在 VWAP 下方"
+    typer.echo(f"    价格{pos}")
 
     typer.echo("")
-    typer.secho("  Volume Profile", bold=True)
+    typer.secho("  成交量分布 (Volume Profile)", bold=True)
     typer.echo(f"    POC:               ${profile.poc:>10,.2f}")
     typer.echo(
-        f"    Value Area (70%):  ${profile.val:>10,.2f}"
+        f"    价值区间 (70%):    ${profile.val:>10,.2f}"
         f"  -  ${profile.vah:>10,.2f}"
     )
-    typer.echo(f"    bin width:         ${profile.bin_width:>10,.2f}")
+    typer.echo(f"    每档宽度:          ${profile.bin_width:>10,.2f}")
     if last_close < profile.val:
-        typer.echo("    price is BELOW value area  (potential mean-reversion long)")
+        typer.echo("    价格在价值区间下方 (潜在均值回归做多)")
     elif last_close > profile.vah:
-        typer.echo("    price is ABOVE value area  (potential mean-reversion short)")
+        typer.echo("    价格在价值区间上方 (潜在均值回归做空)")
     else:
-        typer.echo("    price is INSIDE value area")
+        typer.echo("    价格在价值区间内")
 
 
 @app.command(name="analyze-zones")
@@ -585,8 +595,8 @@ def analyze_zones(
 
     typer.echo("")
     typer.secho(
-        f"  Order Blocks  ({sum(1 for o in obs if o.mitigated_at is None)} active "
-        f"/ {len(obs)} total)",
+        f"  订单块 (Order Block)  ({sum(1 for o in obs if o.mitigated_at is None)} 个生效中 "
+        f"/ {len(obs)} 个总计)",
         bold=True,
     )
     for ob in obs:
@@ -594,19 +604,20 @@ def analyze_zones(
             continue
         arrow = "↑" if ob.direction == "bullish" else "↓"
         colour = typer.colors.GREEN if ob.direction == "bullish" else typer.colors.RED
+        direction_zh = "看涨" if ob.direction == "bullish" else "看跌"
         status = (
-            "MITIGATED" if ob.mitigated_at is not None else "ACTIVE"
+            "已缓解" if ob.mitigated_at is not None else "生效中"
         )
         typer.secho(
-            f"    {ob.timestamp:%Y-%m-%d %H:%M}  {arrow} {ob.direction:7s}  "
-            f"body ${ob.bottom:>9,.2f}-${ob.top:<9,.2f}  [{status}]",
+            f"    {ob.timestamp:%Y-%m-%d %H:%M}  {arrow} {direction_zh:4s}  "
+            f"实体 ${ob.bottom:>9,.2f}-${ob.top:<9,.2f}  [{status}]",
             fg=colour,
         )
 
     typer.echo("")
     typer.secho(
-        f"  Fair Value Gaps  ({sum(1 for f in fvgs if f.mitigated_at is None)} unfilled "
-        f"/ {len(fvgs)} total)",
+        f"  公允价值缺口 (FVG)  ({sum(1 for f in fvgs if f.mitigated_at is None)} 个未填补 "
+        f"/ {len(fvgs)} 个总计)",
         bold=True,
     )
     # Show the most recent unfilled gaps near current price (top 10 by recency).
@@ -615,16 +626,17 @@ def analyze_zones(
     for fvg in shown:
         arrow = "↑" if fvg.direction == "bullish" else "↓"
         colour = typer.colors.GREEN if fvg.direction == "bullish" else typer.colors.RED
-        status = "FILLED" if fvg.mitigated_at is not None else "UNFILLED"
+        direction_zh = "看涨" if fvg.direction == "bullish" else "看跌"
+        status = "已填补" if fvg.mitigated_at is not None else "未填补"
         # Annotate distance from current price.
         if last_close < fvg.bottom:
-            pos = f"price ${(fvg.bottom - last_close):,.0f} below gap"
+            pos = f"价格在缺口下方 ${(fvg.bottom - last_close):,.0f}"
         elif last_close > fvg.top:
-            pos = f"price ${(last_close - fvg.top):,.0f} above gap"
+            pos = f"价格在缺口上方 ${last_close - fvg.top:,.0f}"
         else:
-            pos = "PRICE INSIDE GAP"
+            pos = "价格在缺口内"
         typer.secho(
-            f"    {fvg.timestamp:%Y-%m-%d %H:%M}  {arrow} {fvg.direction:7s}  "
+            f"    {fvg.timestamp:%Y-%m-%d %H:%M}  {arrow} {direction_zh:4s}  "
             f"${fvg.bottom:>9,.2f}-${fvg.top:<9,.2f}  [{status}]  {pos}",
             fg=colour,
         )
@@ -682,17 +694,17 @@ def analyze_liquidity(
 
     n_active = sum(1 for lv in levels if lv.swept_at is None)
     typer.secho(
-        f"{sym}  {timeframe}  current price: ${last_close:,.2f}",
+        f"{sym}  {timeframe}  当前价格: ${last_close:,.2f}",
         fg=typer.colors.CYAN,
         bold=True,
     )
     typer.secho(
-        f"  Liquidity Pools  ({n_active} active / {len(levels)} total)",
+        f"  流动性池  ({n_active} 个生效中 / {len(levels)} 个总计)",
         bold=True,
     )
 
     if not levels:
-        typer.echo("    (no clusters meet the tolerance/min_touches criteria)")
+        typer.echo("    (没有满足容差/最小触碰次数条件的聚集)")
         return
 
     # Sort displayed levels by price for a "ladder" view: highs above lows.
@@ -703,17 +715,18 @@ def analyze_liquidity(
     for lv in shown:
         arrow = "▲" if lv.side == "high" else "▼"
         colour = typer.colors.RED if lv.side == "high" else typer.colors.GREEN
-        status = "SWEPT" if lv.swept_at is not None else "ACTIVE"
+        side_zh = "等高" if lv.side == "high" else "等低"
+        status = "已扫" if lv.swept_at is not None else "生效中"
         # Distance to current price.
         if lv.side == "high":
             dist = lv.price - last_close
-            pos = f"${dist:,.0f} above price" if dist > 0 else f"${-dist:,.0f} below price"
+            pos = f"价格上方 ${dist:,.0f}" if dist > 0 else f"价格下方 ${-dist:,.0f}"
         else:
             dist = last_close - lv.price
-            pos = f"${dist:,.0f} below price" if dist > 0 else f"${-dist:,.0f} above price"
+            pos = f"价格下方 ${dist:,.0f}" if dist > 0 else f"价格上方 ${-dist:,.0f}"
         typer.secho(
-            f"    {arrow} {lv.side:5s}  ${lv.price:>10,.2f}  "
-            f"{len(lv.touches)}x touches  spread {lv.spread_bps:>4.1f}bps  "
+            f"    {arrow} {side_zh}  ${lv.price:>10,.2f}  "
+            f"{len(lv.touches)} 次触碰  spread {lv.spread_bps:>4.1f}bps  "
             f"[{status}]  {pos}",
             fg=colour,
         )
@@ -790,12 +803,12 @@ def analyze_stop_hunts(
 
     n_confirmed = sum(1 for h in hunts if h.confirmed)
     typer.secho(
-        f"  Stop Hunts  ({len(hunts)} total, {n_confirmed} confirmed)",
+        f"  止损猎杀  ({len(hunts)} 个总计, {n_confirmed} 个已确认)",
         bold=True,
     )
 
     if not hunts:
-        typer.echo("    (no stop-hunt patterns detected)")
+        typer.echo("    (未检测到止损猎杀形态)")
         return
 
     typer.echo("")
@@ -803,12 +816,12 @@ def analyze_stop_hunts(
         arrow = "▼" if h.side == "high" else "▲"
         colour = typer.colors.RED if h.side == "high" else typer.colors.GREEN
         # For high hunts: the bias is bearish (down arrow); for low hunts: bullish (up).
-        bias = "bear reversal" if h.side == "high" else "bull reversal"
-        cflag = "✓ confirmed" if h.confirmed else "  unconfirmed"
+        bias = "看跌反转" if h.side == "high" else "看涨反转"
+        cflag = "✓ 已确认" if h.confirmed else "  未确认"
         typer.secho(
-            f"    {h.timestamp:%Y-%m-%d %H:%M}  {arrow} {bias:14s}  "
-            f"pool ${h.pool_price:>9,.2f} ({h.pool_touches}x)  "
-            f"wick {h.wick_ratio:.0%}  vol {h.volume_ratio:>4.1f}x  "
+            f"    {h.timestamp:%Y-%m-%d %H:%M}  {arrow} {bias:6s}  "
+            f"池 ${h.pool_price:>9,.2f} ({h.pool_touches}x)  "
+            f"影线 {h.wick_ratio:.0%}  量比 {h.volume_ratio:>4.1f}x  "
             f"{cflag}",
             fg=colour,
         )
@@ -923,7 +936,7 @@ def analyze_divergences(
     last_close = float(resampled.row(resampled.height - 1, named=True)["close"])
 
     typer.secho(
-        f"{sym}  {timeframe}  current price: ${last_close:,.2f}",
+        f"{sym}  {timeframe}  当前价格: ${last_close:,.2f}",
         fg=typer.colors.CYAN,
         bold=True,
     )
@@ -931,27 +944,29 @@ def analyze_divergences(
     for e in events:
         by_indicator[e.indicator] = by_indicator.get(e.indicator, 0) + 1
 
-    summary_parts = [f"{by_indicator[ind]} {ind}" for ind in requested if ind in valid]
+    ind_zh_map = {"cvd": "CVD", "volume": "成交量", "oi": "OI"}
+    summary_parts = [f"{by_indicator[ind]} {ind_zh_map.get(ind, ind)}" for ind in requested if ind in valid]
     typer.secho(
-        f"  Divergences  ({len(events)} total: " + ", ".join(summary_parts) + ")",
+        f"  背离  ({len(events)} 个总计: " + ", ".join(summary_parts) + ")",
         bold=True,
     )
 
     if not events:
-        typer.echo("    (no divergences meet the criteria)")
+        typer.echo("    (没有满足条件的背离)")
         return
 
     typer.echo("")
     for e in events:
         arrow = "▼" if e.side == "bearish" else "▲"
         colour = typer.colors.RED if e.side == "bearish" else typer.colors.GREEN
-        bias = "bearish reversal" if e.side == "bearish" else "bullish reversal"
+        bias = "看跌反转" if e.side == "bearish" else "看涨反转"
+        ind_zh = ind_zh_map.get(e.indicator, e.indicator)
         typer.secho(
-            f"    {e.timestamp:%Y-%m-%d %H:%M}  {arrow} {bias:18s}  "
-            f"{e.indicator:7s}  "
-            f"price ${e.prior_swing_price:>8,.0f}→${e.swing_price:<8,.0f}  "
-            f"ind {e.prior_indicator_value:>+10,.1f}→{e.indicator_value:<+10,.1f}  "
-            f"strength {e.strength:.0%}",
+            f"    {e.timestamp:%Y-%m-%d %H:%M}  {arrow} {bias:8s}  "
+            f"{ind_zh:5s}  "
+            f"价格 ${e.prior_swing_price:>8,.0f}→${e.swing_price:<8,.0f}  "
+            f"指标 {e.prior_indicator_value:>+10,.1f}→{e.indicator_value:<+10,.1f}  "
+            f"强度 {e.strength:.0%}",
             fg=colour,
         )
 
@@ -1030,7 +1045,7 @@ def wyckoff(
     last_close = float(resampled.row(resampled.height - 1, named=True)["close"])
 
     typer.secho(
-        f"{sym}  {timeframe}  current price: ${last_close:,.2f}",
+        f"{sym}  {timeframe}  当前价格: ${last_close:,.2f}",
         fg=typer.colors.CYAN,
         bold=True,
     )
@@ -1042,7 +1057,7 @@ def wyckoff(
     }.get(current.side or "", typer.colors.WHITE)
     typer.echo("")
     typer.secho(
-        f"  Wyckoff state: {phase_label}  (confidence {current.confidence:.0%})",
+        f"  Wyckoff 状态: {phase_label}  (置信度 {current.confidence:.0%})",
         fg=phase_colour,
         bold=True,
     )
@@ -1050,22 +1065,21 @@ def wyckoff(
     if current.range_high is not None or current.range_low is not None:
         rh = f"${current.range_high:,.0f}" if current.range_high is not None else "?"
         rl = f"${current.range_low:,.0f}" if current.range_low is not None else "?"
-        typer.echo(f"  Range:         {rl}  -  {rh}")
+        typer.echo(f"  区间:          {rl}  -  {rh}")
 
     if current.invalidation_price is not None:
-        typer.echo(f"  Invalidation:  bar close past ${current.invalidation_price:,.0f}")
+        typer.echo(f"  失效条件:      收盘价跌破 ${current.invalidation_price:,.0f}")
 
     if current.phase == WyckoffPhase.NEUTRAL and not current.events:
         typer.echo(
-            "  (no Wyckoff-defining events detected — try a longer timeframe or "
-            "more history)"
+            "  (未检测到 Wyckoff 事件 — 请尝试更长的时间周期或更多历史数据)"
         )
         return
 
     if show_events > 0 and current.events:
         typer.echo("")
         typer.secho(
-            f"  Event chain (last {min(show_events, len(current.events))}):", bold=True
+            f"  事件链 (最近 {min(show_events, len(current.events))} 个):", bold=True
         )
         for e in current.events[-show_events:]:
             colour = (
@@ -1076,36 +1090,37 @@ def wyckoff(
             label = _format_event_type(e.event_type)
             typer.secho(
                 f"    {e.timestamp:%Y-%m-%d %H:%M}  {label:<28s} "
-                f"@${e.price:>10,.0f}  conf {e.confidence:.0%}",
+                f"@${e.price:>10,.0f}  置信度 {e.confidence:.0%}",
                 fg=colour,
             )
 
 
 def _format_phase(phase: object) -> str:
-    """Pretty-print a WyckoffPhase (e.g. 'Accumulation Phase C')."""
+    """Pretty-print a WyckoffPhase in Chinese (e.g. '累积阶段 C')."""
     s = str(phase.value if hasattr(phase, "value") else phase)
     if s == "neutral":
-        return "Neutral"
+        return "中性"
     side, _, sub = s.partition("_phase_")
-    return f"{side.capitalize()} Phase {sub.upper()}"
+    side_zh = "累积" if side == "accumulation" else "派发"
+    return f"{side_zh}阶段 {sub.upper()}"
 
 
 def _format_event_type(event_type: object) -> str:
-    """Translate enum → readable phrase."""
+    """Translate enum → Chinese readable phrase."""
     s = str(event_type.value if hasattr(event_type, "value") else event_type)
     pretty = {
-        "selling_climax": "Selling Climax (SC)",
-        "automatic_rally": "Automatic Rally (AR)",
-        "secondary_test": "Secondary Test (ST)",
-        "spring": "Spring",
-        "sign_of_strength": "Sign of Strength (SOS)",
-        "last_point_of_support": "Last Point of Support (LPS)",
-        "buying_climax": "Buying Climax (BC)",
-        "automatic_reaction": "Automatic Reaction (AR)",
-        "secondary_test_distribution": "Secondary Test (ST)",
-        "upthrust_after_distribution": "UTAD",
-        "sign_of_weakness": "Sign of Weakness (SOW)",
-        "last_point_of_supply": "Last Point of Supply (LPSY)",
+        "selling_climax": "抛售高潮 (SC)",
+        "automatic_rally": "自动反弹 (AR)",
+        "secondary_test": "二次测试 (ST)",
+        "spring": "弹簧 (Spring)",
+        "sign_of_strength": "强势信号 (SOS)",
+        "last_point_of_support": "最后支撑点 (LPS)",
+        "buying_climax": "买入高潮 (BC)",
+        "automatic_reaction": "自动回落 (AR)",
+        "secondary_test_distribution": "二次测试 (ST)",
+        "upthrust_after_distribution": "冲高回落 (UTAD)",
+        "sign_of_weakness": "弱势信号 (SOW)",
+        "last_point_of_supply": "最后供给点 (LPSY)",
     }
     return pretty.get(s, s)
 
@@ -1149,7 +1164,7 @@ def context_report(
         detect_stop_hunts,
         detect_structure_events,
         detect_swings,
-        render_text,
+        render_markdown,
         resample_ohlcv,
     )
 
@@ -1289,7 +1304,7 @@ def context_report(
         htf_trend=htf_trend,  # type: ignore[arg-type]
         htf_events=htf_events,
     )
-    wyckoff_ctx = build_wyckoff_context(wyckoff_snap)
+    wyckoff_ctx = build_wyckoff_context(wyckoff_snap, language="zh")
     liquidity_map = build_liquidity_map(liquidity_levels, current_price=last_close)
     zone_ctx = build_zone_context(order_blocks, fvgs, current_price=last_close)
     flow_ctx = build_flow_context(
@@ -1319,9 +1334,10 @@ def context_report(
         flow=flow_ctx,
         stop_hunts=stop_hunt_ctx,
         funding=funding_ctx,
+        language="zh",
     )
 
-    typer.echo(render_text(report))
+    typer.echo(render_markdown(report, language="zh"))
 
 
 @app.command(name="send-alert")
