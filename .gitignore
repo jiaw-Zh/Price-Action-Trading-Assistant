@@ -113,3 +113,4 @@ temp/
 .cache/
 *.bak
 *.tmp
+.superpowers/

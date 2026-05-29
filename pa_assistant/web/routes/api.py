@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import duckdb
 from fastapi import APIRouter, Query
@@ -212,11 +213,10 @@ async def run_analysis(request: AnalyzeRequest) -> AnalyzeResponse:
             confidence=wyckoff_snap.confidence,
             range_low=wyckoff_snap.range_low,
             range_high=wyckoff_snap.range_high,
-            next_watch=wyckoff_snap.next_watch or "",
         ),
         trend=TrendState(
-            working=working_trend,
-            htf=htf_trend,
+            working=working_trend,  # type: ignore[arg-type]
+            htf=htf_trend,  # type: ignore[arg-type]
             alignment=alignment,
         ),
         liquidity_levels=[

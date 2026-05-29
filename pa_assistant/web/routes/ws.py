@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from datetime import datetime
 
@@ -11,7 +12,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from pa_assistant.analysis import (
     detect_fvgs,
-    detect_liquidity_levels,
     detect_order_blocks,
     detect_structure_events,
     detect_swings,
@@ -86,7 +86,7 @@ async def replay_websocket(
                     current_idx = max(start_idx, min(data["bar_index"] + start_idx, resampled.height - 1))
                 elif data["type"] == "set_speed":
                     delay = 1.0 / data["speed"]
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
             if is_playing and current_idx < resampled.height:
@@ -95,7 +95,6 @@ async def replay_websocket(
                 subset = resampled.slice(0, current_idx + 1)
                 annotated = detect_swings(subset, lookback=3)
                 structure_events = detect_structure_events(annotated)
-                liquidity_levels = detect_liquidity_levels(subset)
                 order_blocks = detect_order_blocks(subset, structure_events)
                 fvgs = detect_fvgs(subset)
 
@@ -129,7 +128,5 @@ async def replay_websocket(
     except Exception as e:
         print(f"WebSocket error: {e}")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await websocket.close()
-        except Exception:
-            pass
