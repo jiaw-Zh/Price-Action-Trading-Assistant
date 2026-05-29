@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from pa_assistant.web.routes import pages
+from pa_assistant.web.routes import api, pages
 
 BASE_DIR = Path(__file__).parent
 
@@ -20,6 +20,7 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 # Include routes
 app.include_router(pages.router)
+app.include_router(api.router)
 
 
 @app.get("/health")
