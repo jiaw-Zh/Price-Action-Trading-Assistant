@@ -33,6 +33,7 @@ from pa_assistant.storage import (
 )
 
 if TYPE_CHECKING:
+    from pa_assistant.analysis.wyckoff import WyckoffEventType, WyckoffPhase
     from pa_assistant.ingestion import WeightedFundingRate
 
 app = typer.Typer(
@@ -1095,9 +1096,9 @@ def wyckoff(
             )
 
 
-def _format_phase(phase: object) -> str:
+def _format_phase(phase: WyckoffPhase | str) -> str:
     """Pretty-print a WyckoffPhase in Chinese (e.g. '累积阶段 C')."""
-    s = str(phase.value if hasattr(phase, "value") else phase)
+    s = phase.value if isinstance(phase, WyckoffPhase) else phase
     if s == "neutral":
         return "中性"
     side, _, sub = s.partition("_phase_")
@@ -1105,9 +1106,9 @@ def _format_phase(phase: object) -> str:
     return f"{side_zh}阶段 {sub.upper()}"
 
 
-def _format_event_type(event_type: object) -> str:
+def _format_event_type(event_type: WyckoffEventType | str) -> str:
     """Translate enum → Chinese readable phrase."""
-    s = str(event_type.value if hasattr(event_type, "value") else event_type)
+    s = event_type.value if isinstance(event_type, WyckoffEventType) else event_type
     pretty = {
         "selling_climax": "抛售高潮 (SC)",
         "automatic_rally": "自动反弹 (AR)",
@@ -1544,6 +1545,38 @@ def send_alert(
         typer.secho(f"  ✗ {name}: {err}", fg=typer.colors.RED)
     if failures and not successes:
         raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Web server command
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", help="Bind host."),
+    port: int = typer.Option(8000, help="Bind port."),
+    reload: bool = typer.Option(False, help="Enable auto-reload for development."),
+) -> None:
+    """Start the web server."""
+    import uvicorn
+
+    typer.secho(
+        f"Starting PA Assistant web server on {host}:{port}",
+        fg=typer.colors.GREEN,
+        bold=True,
+    )
+    typer.echo(f"  Dashboard:  http://localhost:{port}/")
+    typer.echo(f"  Liquidity:  http://localhost:{port}/liquidity")
+    typer.echo(f"  Backtest:   http://localhost:{port}/backtest")
+    typer.echo("")
+
+    uvicorn.run(
+        "pa_assistant.web.app:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )
 
 
 if __name__ == "__main__":
