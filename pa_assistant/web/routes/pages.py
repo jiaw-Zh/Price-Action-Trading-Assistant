@@ -11,7 +11,7 @@ async def dashboard(request: Request) -> HTMLResponse:
     """Main dashboard page."""
     from pa_assistant.web.app import templates
 
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="dashboard.html")
 
 
 @router.get("/liquidity", response_class=HTMLResponse)
@@ -19,7 +19,7 @@ async def liquidity(request: Request) -> HTMLResponse:
     """Liquidity analysis page."""
     from pa_assistant.web.app import templates
 
-    return templates.TemplateResponse("liquidity.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="liquidity.html")
 
 
 @router.get("/backtest", response_class=HTMLResponse)
@@ -27,4 +27,4 @@ async def backtest(request: Request) -> HTMLResponse:
     """Backtest replay page."""
     from pa_assistant.web.app import templates
 
-    return templates.TemplateResponse("backtest.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="backtest.html")
