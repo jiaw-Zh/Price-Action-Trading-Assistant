@@ -80,6 +80,45 @@ async def get_klines(
     return KlineResponse(bars=bars, total=len(bars))
 
 
+@router.get("/liquidity")
+async def get_liquidity(symbol: str = Query(default="BTCUSDT")) -> dict[str, Any]:
+    """Get liquidity levels."""
+    settings = get_settings()
+
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        klines = conn.execute(
+            "SELECT open_time, open, high, low, close, volume "
+            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [symbol],
+        ).pl()
+    finally:
+        conn.close()
+
+    if klines.is_empty():
+        return {"levels": [], "current_price": 0}
+
+    resampled = resample_ohlcv(klines, "1h")
+    levels = detect_liquidity_levels(resampled)
+    current_price = float(resampled.row(resampled.height - 1, named=True)["close"])
+
+    return {
+        "levels": [
+            {
+                "price": lv.price,
+                "side": lv.side,
+                "touches": len(lv.touches),
+                "spread_bps": lv.spread_bps,
+                "distance": lv.price - current_price,
+                "distance_pct": (lv.price - current_price) / current_price * 100,
+                "status": "swept" if lv.swept_at else "active",
+            }
+            for lv in levels
+        ],
+        "current_price": current_price,
+    }
+
+
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def run_analysis(request: AnalyzeRequest) -> AnalyzeResponse:
     """Run full analysis on stored klines."""

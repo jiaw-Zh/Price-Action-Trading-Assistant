@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}PA Assistant - 流动性分析{% endblock %}
+
+{% block content %}
+<div class="flex h-[calc(100vh-64px)]">
+    <!-- 左侧流动性池列表 -->
+    <aside class="w-80 bg-dark-900 border-r border-dark-700 p-4 overflow-y-auto flex-shrink-0">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-primary font-bold font-display">流动性池</h2>
+            <div class="flex gap-1">
+                <button class="filter-btn px-2 py-1 rounded text-xs cursor-pointer bg-dark-800 text-dark-400" data-filter="all">全部</button>
+                <button class="filter-btn px-2 py-1 rounded text-xs cursor-pointer bg-primary text-dark-900 font-bold" data-filter="active">生效中</button>
+                <button class="filter-btn px-2 py-1 rounded text-xs cursor-pointer bg-dark-800 text-dark-400" data-filter="swept">已扫</button>
+            </div>
+        </div>
+
+        <div id="liquidity-list" class="space-y-2">
+            <div class="text-dark-400 text-sm text-center py-8">加载中...</div>
+        </div>
+    </aside>
+
+    <!-- 右侧可视化 -->
+    <div class="flex-1 bg-dark-900 p-4 flex flex-col">
+        <!-- 统计卡片 -->
+        <div class="grid grid-cols-4 gap-3 mb-4">
+            <div class="bg-dark-800 rounded-lg p-3 text-center">
+                <div class="text-xs text-dark-400">生效中</div>
+                <div id="stat-active" class="text-green-500 text-2xl font-bold">-</div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-3 text-center">
+                <div class="text-xs text-dark-400">已扫</div>
+                <div id="stat-swept" class="text-dark-400 text-2xl font-bold">-</div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-3 text-center">
+                <div class="text-xs text-dark-400">Stop Hunt</div>
+                <div id="stat-hunts" class="text-primary text-2xl font-bold">-</div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-3 text-center">
+                <div class="text-xs text-dark-400">最近磁吸</div>
+                <div id="stat-magnet" class="text-dark-50 text-2xl font-bold">-</div>
+            </div>
+        </div>
+
+        <!-- 流动性阶梯图 -->
+        <div class="flex-1 bg-dark-800 rounded-lg p-4">
+            <div class="text-primary font-bold text-sm mb-3 font-display">流动性阶梯</div>
+            <svg id="ladder-chart" width="100%" height="90%" viewBox="0 0 600 400"></svg>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let currentFilter = 'active';
+    let liquidityData = [];
+
+    async function loadLiquidity() {
+        try {
+            const resp = await fetch('/api/liquidity');
+            const data = await resp.json();
+            liquidityData = data.levels || [];
+            renderList();
+            renderStats();
+            renderLadder();
+        } catch (err) {
+            console.error('Failed to load liquidity:', err);
+        }
+    }
+
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.filter-btn').forEach(b => {
+                b.classList.remove('bg-primary', 'text-dark-900', 'font-bold');
+                b.classList.add('bg-dark-800', 'text-dark-400');
+            });
+            btn.classList.remove('bg-dark-800', 'text-dark-400');
+            btn.classList.add('bg-primary', 'text-dark-900', 'font-bold');
+            currentFilter = btn.dataset.filter;
+            renderList();
+        });
+    });
+
+    function renderList() {
+        const container = document.getElementById('liquidity-list');
+        const filtered = liquidityData.filter(lv => {
+            if (currentFilter === 'all') return true;
+            return lv.status === currentFilter;
+        });
+
+        if (filtered.length === 0) {
+            container.innerHTML = '<div class="text-dark-400 text-sm text-center py-8">无数据</div>';
+            return;
+        }
+
+        container.innerHTML = filtered.map(lv => `
+            <div class="bg-dark-800 rounded-lg p-3 border-l-[3px] ${
+                lv.status === 'swept' ? 'border-dark-600' :
+                lv.side === 'high' ? 'border-green-500' : 'border-red-500'
+            } card-hover cursor-pointer">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <span class="${lv.side === 'high' ? 'text-green-500' : 'text-red-500'} font-bold">
+                            ${lv.side === 'high' ? '▲ 等高' : '▼ 等低'}
+                        </span>
+                        <span class="text-dark-50 ml-2 font-bold">$${lv.price.toLocaleString()}</span>
+                    </div>
+                    <span class="text-xs px-2 py-0.5 rounded ${
+                        lv.status === 'swept' ? 'bg-dark-600 text-dark-400' : 'bg-green-500 text-dark-900'
+                    }">${lv.touches}x 触碰</span>
+                </div>
+                <div class="text-xs text-dark-400 mt-2">
+                    <div>spread: ${lv.spread_bps.toFixed(1)} bps | 距离: ${lv.distance >= 0 ? '+' : ''}$${lv.distance.toLocaleString()} (${lv.distance_pct.toFixed(1)}%)</div>
+                    <div class="${lv.status === 'swept' ? 'text-dark-600' : 'text-green-500'} mt-1">
+                        状态: ${lv.status === 'swept' ? '已扫' : '生效中'}
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function renderStats() {
+        const active = liquidityData.filter(l => l.status === 'active').length;
+        const swept = liquidityData.filter(l => l.status === 'swept').length;
+        const magnet = liquidityData
+            .filter(l => l.status === 'active')
+            .sort((a, b) => Math.abs(a.distance) - Math.abs(b.distance))[0];
+
+        document.getElementById('stat-active').textContent = active;
+        document.getElementById('stat-swept').textContent = swept;
+        document.getElementById('stat-hunts').textContent = '-';
+        document.getElementById('stat-magnet').textContent = magnet
+            ? `$${(magnet.price / 1000).toFixed(1)}k`
+            : '-';
+    }
+
+    function renderLadder() {
+        const svg = document.getElementById('ladder-chart');
+        const active = liquidityData.filter(l => l.status === 'active');
+        if (active.length === 0) {
+            svg.innerHTML = '<text x="300" y="200" fill="#94A3B8" text-anchor="middle">无数据</text>';
+            return;
+        }
+
+        const prices = active.map(l => l.price);
+        const minPrice = Math.min(...prices) * 0.999;
+        const maxPrice = Math.max(...prices) * 1.001;
+        const priceRange = maxPrice - minPrice || 1;
+
+        const currentPrice = liquidityData[0]?.price || 0;
+
+        let html = '';
+
+        // Current price line
+        const currentY = 50 + ((maxPrice - currentPrice) / priceRange) * 300;
+        html += `<line x1="50" y1="${currentY}" x2="550" y2="${currentY}" stroke="#F59E0B" stroke-width="2"/>`;
+        html += `<text x="555" y="${currentY + 4}" fill="#F59E0B" font-size="11">当前价格</text>`;
+
+        // Liquidity levels
+        active.forEach((lv) => {
+            const y = 50 + ((maxPrice - lv.price) / priceRange) * 300;
+            const color = lv.side === 'high' ? '#22C55E' : '#EF4444';
+            const width = 100 + lv.touches * 20;
+
+            html += `<rect x="100" y="${y - 10}" width="${width}" height="20" fill="${color}" fill-opacity="0.2" stroke="${color}" stroke-width="1" rx="4"/>`;
+            html += `<text x="110" y="${y + 4}" fill="${color}" font-size="11">$${lv.price.toLocaleString()} (${lv.touches}x)</text>`;
+        });
+
+        svg.innerHTML = html;
+    }
+
+    document.addEventListener('DOMContentLoaded', loadLiquidity);
+</script>
+{% endblock %}
