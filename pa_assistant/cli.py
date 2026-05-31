@@ -1558,12 +1558,13 @@ def ai_analyze(
     htf: str | None = typer.Option(None, help="Higher timeframe for trend alignment."),
     language: str = typer.Option("zh", help="Report language (zh/en)."),
     dry_run: bool = typer.Option(False, help="Print report without sending."),
+    no_fetch: bool = typer.Option(False, "--no-fetch", help="Skip fetching latest data from exchanges."),
     symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
 ) -> None:
     """Run AI analysis and push to notification channels."""
     from pa_assistant.analysis.llm import LLMConfig, analyze_with_llm
     from pa_assistant.notifications import NotificationMessage, configured_channels, send_to_all
-    from pa_assistant.scheduler import collect_market_data
+    from pa_assistant.scheduler import collect_market_data, fetch_latest_data
 
     settings = get_settings()
     _bootstrap(settings)
@@ -1571,6 +1572,12 @@ def ai_analyze(
 
     sym = (symbol or settings.symbol).upper()
     log.info("ai_analyze_start", symbol=sym, timeframe=timeframe, htf=htf)
+
+    # 0. Fetch latest data from exchanges
+    if not no_fetch:
+        typer.echo("正在从交易所拉取最新数据...")
+        asyncio.run(fetch_latest_data(settings, days=1))
+        typer.echo("数据拉取完成")
 
     # 1. Collect market data
     try:

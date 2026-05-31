@@ -6,13 +6,16 @@ Uses APScheduler to run analysis tasks at specific times:
 * Every 4 hours: 4H K-line analysis
 
 Each job:
-1. Collects market data from DuckDB
-2. Runs analysis engine
-3. Calls LLM for interpretation
-4. Pushes to configured notification channels
+1. Fetches latest data from exchanges (klines, OI, funding)
+2. Collects market data from DuckDB
+3. Runs analysis engine
+4. Calls LLM for interpretation
+5. Pushes to configured notification channels
 """
 
 from __future__ import annotations
+
+import time
 
 import duckdb
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -39,6 +42,106 @@ from pa_assistant.notifications import (
     configured_channels,
     send_to_all,
 )
+
+
+async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
+    """Fetch latest data from exchanges before analysis.
+
+    1. Backfill recent klines (default 1 day)
+    2. Update OI snapshot
+    3. Update funding rate
+    """
+
+    log = get_logger("scheduler.fetch")
+    sym = settings.symbol.upper()
+
+    # 1. Backfill klines
+    try:
+        from pa_assistant.ingestion import BinanceRestClient, klines_to_polars
+        from pa_assistant.storage import open_db, upsert_klines_1m
+
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - days * 86_400_000
+
+        log.info("fetch_klines_start", symbol=sym, days=days)
+
+        async with BinanceRestClient.from_settings(settings) as client:
+            with open_db(settings.duckdb_path) as db:
+                total = 0
+                async for page in client.iter_klines(
+                    sym, "1m", start_ms=start_ms, end_ms=end_ms
+                ):
+                    df = klines_to_polars(page, sym)
+                    total += upsert_klines_1m(db, df)
+
+        log.info("fetch_klines_done", symbol=sym, written=total)
+    except Exception as e:
+        log.error("fetch_klines_failed", error=str(e))
+
+    # 2. Update OI snapshot
+    try:
+        from pa_assistant.ingestion import BinanceRestClient
+        from pa_assistant.storage import insert_oi_snapshot, open_db
+
+        log.info("fetch_oi_start", symbol=sym)
+
+        async with BinanceRestClient.from_settings(settings) as client:
+            payload = await client.get_open_interest(sym)
+
+        ts_ms = int(str(payload["time"]))
+        from datetime import UTC, datetime
+
+        timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
+        open_interest = float(str(payload["openInterest"]))
+
+        with open_db(settings.duckdb_path) as db:
+            insert_oi_snapshot(db, symbol=sym, timestamp=timestamp, open_interest=open_interest)
+
+        log.info("fetch_oi_done", symbol=sym, oi=open_interest)
+    except Exception as e:
+        log.error("fetch_oi_failed", error=str(e))
+
+    # 3. Update funding rate
+    try:
+        from pa_assistant.ingestion import make_funding_provider
+        from pa_assistant.storage import insert_funding_weighted, open_db
+
+        log.info("fetch_funding_start", symbol=sym)
+
+        provider = make_funding_provider(settings)
+        try:
+            result = await provider.get_weighted_funding(sym)
+        finally:
+            await provider.aclose()
+
+        raw_components = {
+            s.exchange: {
+                "funding_rate": s.funding_rate,
+                "open_interest_base": s.open_interest_base,
+                "snapshot_time": s.snapshot_time.isoformat(),
+            }
+            for s in result.components
+        }
+
+        with open_db(settings.duckdb_path) as db:
+            insert_funding_weighted(
+                db,
+                symbol=result.symbol,
+                timestamp=result.timestamp,
+                weighted_rate=result.weighted_rate,
+                source=result.source,
+                sample_count=result.sample_count,
+                raw=raw_components,
+            )
+
+        log.info(
+            "fetch_funding_done",
+            symbol=sym,
+            rate=result.weighted_rate,
+            source=result.source,
+        )
+    except Exception as e:
+        log.error("fetch_funding_failed", error=str(e))
 
 
 def collect_market_data(
@@ -250,6 +353,10 @@ async def run_analysis_job(
     log.info("analysis_job_start", timeframe=timeframe, htf=htf)
 
     try:
+        # 0. Fetch latest data from exchanges
+        log.info("fetching_latest_data")
+        await fetch_latest_data(settings, days=1)
+
         # 1. Collect market data
         market_data = collect_market_data(settings, timeframe, htf=htf)
 
