@@ -64,55 +64,6 @@ Wyckoff · Smart Money Concepts · ICT · VSA · 量价背离 · 流动性猎杀
 
 ---
 
-## 项目状态
-
-### ✅ Phase 0 — 基础设施 + 数据接入（已完成）
-
-- 项目骨架（uv + pyproject.toml + ruff + mypy strict + pytest）
-- 配置管理（pydantic-settings + .env）
-- 结构化日志（structlog）
-- DuckDB schema + repository
-- HTTP/SOCKS 代理支持（应对区域封锁）
-- **Binance Futures REST 客户端**（async + 指数退避重试）
-- **5 源 OI 加权资金费率**（Binance + OKX + Bybit + Bitget + Gate.io）
-- **OI 历史回填**（Binance openInterestHist，5m/15m/.../1d，最多 30 天）
-- 批量 upsert 写入器（Polars → DuckDB Arrow 桥接）
-
-### ✅ Phase 1 — 分析引擎（已完成）
-
-| 切片 | 模块 | 内容 |
-|---|---|---|
-| ✅ 1 | `analysis/resample` + `analysis/structure` | 1m → 任意 TF 重采样；分形 swing 识别；BOS / CHoCH 事件检测 |
-| ✅ 2 | `analysis/volume` + `analysis/profile` | Per-bar Delta / 累计 CVD / VWAP + σ 通道 / Volume Profile (POC / VAH / VAL) |
-| ✅ 3 | `analysis/zones` | Order Block 识别（依赖结构事件）+ Fair Value Gap 识别（纯几何） + mitigation 跟踪 |
-
-### ✅ Phase 2 — 流动性引擎（已完成）
-
-| 切片 | 模块 | 内容 |
-|---|---|---|
-| ✅ 1 | `analysis/liquidity` | Equal Highs / Equal Lows 流动性池识别（贪心 1-D 聚类 + sweep 跟踪） |
-| ✅ 2 | `analysis/stop_hunt` | Stop Hunt / 流动性扫荡检测（fakeout vs clean break，三维置信度） |
-| ✅ 3 | `analysis/divergence` | 多指标背离（CVD / Volume / OI），indicator-agnostic 统一抽象 |
-
-### ✅ Phase 3 — 上下文聚合 + 告警（已完成）
-
-| 切片 | 模块 | 内容 |
-|---|---|---|
-| ✅ 1 | `analysis/wyckoff` | Wyckoff 阶段状态机（11 状态 + 12 事件类型 + 纯函数 FSM） |
-| ✅ 2 | `analysis/wyckoff` | 完善事件检测器（AR/ST/SOS/LPS + 1H 闸控 + range 重锚） |
-| ✅ 3 | `analysis/context` | 情境聚合报告（7 子上下文 + Scorecard + render_text/markdown） |
-| ✅ 4 | `notifications/` | 告警推送（Telegram / 企微 / 飞书，三 channel 并发分发） |
-
-### ✅ Phase 4 — AI 分析 + 定时推送（已完成）
-
-| 切片 | 模块 | 内容 |
-|---|---|---|
-| ✅ 1 | `analysis/llm` | LLM 分析模块（OpenAI 兼容 API，结构化 prompt，中文/英文输出） |
-| ✅ 2 | `scheduler` | 定时调度器（APScheduler，每天 8:05 日K / 每小时 1H / 每 4 小时 4H） |
-| ✅ 3 | `scheduler` | 自动数据拉取（分析前自动回填 K 线 + 更新 OI + 更新资金费率） |
-
----
-
 ## 快速开始
 
 ```bash
