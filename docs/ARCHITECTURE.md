@@ -91,43 +91,49 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                        单 Python 进程                              │
+│                        单 Python 进程                            │
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │                     用户交互层 (UI)                          │ │
-│  │   Web Dashboard (FastAPI + React)  │  Telegram Bot          │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                              ▲                                   │
-│  ┌───────────────────────────┴────────────────────────────────┐ │
-│  │              应用服务层 (Application Services)               │ │
-│  │  实时监控  │  回放/复盘  │  告警引擎  │  交易日志             │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                              ▲                                   │
-│  ┌───────────────────────────┴────────────────────────────────┐ │
-│  │              分析引擎 (Analysis Engine) ⭐ 核心               │ │
+│  │                    调度层 (Scheduler)                       │ │
+│  │  APScheduler: 每天8:05日K / 每小时1H / 每4小时4H           │ │
+│  │  自动拉取: K线回填 + OI快照 + 资金费率                      │ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+│                              │                                   │
+│  ┌───────────────────────────▼────────────────────────────────┐ │
+│  │                    AI 分析层 (LLM)                          │ │
+│  │  结构化数据 → Prompt → OpenAI 兼容 API → 中文分析报告       │ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+│                              │                                   │
+│  ┌───────────────────────────▼────────────────────────────────┐ │
+│  │              分析引擎 (Analysis Engine) ⭐ 核心              │ │
 │  │  ┌────────┬────────────┬────────┬────────┬──────────────┐ │ │
 │  │  │ 结构   │ 流动性引擎  │  VSA   │ Wyckoff│ 上下文聚合器  │ │ │
 │  │  │ Module │ Liquidity   │ Module │ FSM    │ Aggregator    │ │ │
 │  │  └────────┴────────────┴────────┴────────┴──────────────┘ │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                              ▲                                   │
-│  ┌───────────────────────────┴────────────────────────────────┐ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+│                              │                                   │
+│  ┌───────────────────────────▼────────────────────────────────┐ │
 │  │              数据处理 (Polars + NumPy)                      │ │
 │  │  多周期对齐 │ 增量计算 │ CVD/Delta/VWAP/Volume Profile      │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                              ▲                                   │
-│  ┌───────────────────────────┴────────────────────────────────┐ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+│                              │                                   │
+│  ┌───────────────────────────▼────────────────────────────────┐ │
 │  │                  存储层 (DuckDB 单文件)                      │ │
-│  │       K 线 │ Trades │ OI │ Funding │ 爆仓 │ 情境快照         │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                              ▲                                   │
-│  ┌───────────────────────────┴────────────────────────────────┐ │
+│  │       K 线 │ OI │ Funding │ 情境快照                         │ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+│                              │                                   │
+│  ┌───────────────────────────▼────────────────────────────────┐ │
 │  │                    数据接入 (Ingestion)                      │ │
 │  │  ┌─────────────────────┐    ┌─────────────────────────┐   │ │
-│  │  │ Binance Connector   │    │ Coinglass Connector     │   │ │
-│  │  │ (WS + REST)         │    │ (REST + 自聚合降级)     │   │ │
-│  │  │ K线/Trades/OI/爆仓  │    │ 加权资金费率            │   │ │
+│  │  │ Binance Connector   │    │ 5 源资金费率聚合         │   │ │
+│  │  │ (REST)              │    │ (Binance+OKX+Bybit+     │   │ │
+│  │  │ K线/OI              │    │  Bitget+Gate.io)        │   │ │
 │  │  └─────────────────────┘    └─────────────────────────┘   │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                              │                                   │
+│  ┌───────────────────────────▼────────────────────────────────┐ │
+│  │                    推送层 (Notifications)                    │ │
+│  │  飞书 / Telegram / 企业微信                                  │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -324,49 +330,94 @@ backfill 数据 → 9 个分析模块 → 7 个子上下文 builder
 
 **这是系统的最终交付物。不是信号，是情境。**
 
-### 5.5 应用服务层
+### 5.5 调度层（Scheduler）
 
-- **CLI 工具**（已实现 ✅）：基于 `typer`，17 个命令覆盖数据接入 + 分析 + 推送全流程
+**职责**：定时触发数据拉取 + 分析 + 推送全流程。
+
+#### APScheduler 配置
+
+| 时间 | 任务 | 时间周期 | 高周期参考 |
+|------|------|----------|------------|
+| 每天 08:05 (北京时间) | 日 K 分析 | 1D | - |
+| 每小时 | 1H 分析 | 1H | 4H |
+| 每 4 小时 | 4H 分析 | 4H | 1D |
+
+#### 自动数据拉取
+
+每次调度触发时，自动执行：
+1. 回填最近 1 天 K 线（Binance REST）
+2. 更新 OI 快照
+3. 更新资金费率（5 源加权）
+
+失败不阻断：任何一步失败只记录日志，不中断后续流程。
+
+#### CLI 命令
+
+```bash
+pa schedule-start          # 启动定时调度器（后台运行）
+pa ai-analyze --timeframe 1h  # 手动触发一次（自动拉取 + 分析 + 推送）
+pa ai-analyze --timeframe 1h --no-fetch  # 跳过拉取，使用已有数据
+pa ai-analyze --timeframe 1h --dry-run   # 试运行，只打印不推送
+```
+
+### 5.6 AI 分析层（LLM）
+
+**职责**：将结构化市场数据转化为人类可读的分析报告。
+
+#### 设计原则
+
+- **OpenAI 兼容 API**：支持 OpenAI、DeepSeek、本地模型等
+- **结构化 Prompt**：系统自动收集市场数据，格式化为结构化 prompt
+- **双语支持**：中文 / 英文输出
+- **解耦**：分析引擎输出结构化数据，LLM 只负责解读，可随时切换模型
+
+#### 分析报告内容
+
+1. **市场概况**：当前趋势、关键价位、多空倾向
+2. **量价分析**：资金费率、OI 变化、背离信号解读
+3. **交易建议**：具体的操作方向、入场区间、止损位、目标位
+
+#### LLM 配置（.env）
+
+```bash
+LLM_API_KEY=sk-your-key
+LLM_BASE_URL=https://api.openai.com/v1  # 或 DeepSeek/其他兼容接口
+LLM_MODEL=gpt-4o
+LLM_MAX_TOKENS=2000
+```
+
+### 5.7 应用服务层
+
+- **CLI 工具**（已实现 ✅）：基于 `typer`，覆盖数据接入 + 分析 + AI 推送全流程
 - **告警引擎**（已实现 ✅）：`pa send-alert` 跑情境聚合报告 → Telegram/企微/飞书并发分发
-- **实时监控（Live Watch）**：图表实时叠加所有标注（OB、FVG、Liquidity、Wyckoff 阶段）— ⏳ 待做
-- **回放/复盘（Replay）**：按任意时间点回放，逐 K 线推进，验证系统判断与实际走势 — ⏳ Phase 4
-- **交易日志（Journal）**：手动记录交易，系统自动关联当时的市场情境快照，用于事后复盘 — ⏳ Phase 4
+- **定时推送**（已实现 ✅）：`pa schedule-start` 定时触发数据拉取 + AI 分析 + 推送
 
-### 5.6 用户交互层
+### 5.8 用户交互层
 
-- **CLI 工具**（已实现 ✅）：基于 `typer`，17 个命令
-- **推送渠道**（已实现 ✅）：Telegram / 企业微信 / 飞书，统一 `NotificationChannel` Protocol，并发分发 + 失败降级
-- **Web Dashboard**（暂跳过）：FastAPI + TradingView Lightweight Charts — 需要时再做
+- **CLI 工具**（已实现 ✅）：基于 `typer`
+- **推送渠道**（已实现 ✅）：飞书 / Telegram / 企业微信，统一 `NotificationChannel` Protocol，并发分发 + 失败降级
 
 ---
 
-## 六、数据流示例（一次完整的分析）
+## 六、数据流示例（一次完整的 AI 分析）
 
 ```
-[Binance WS]      ──> 1m K线 + Trades + 爆仓流入
-[Coinglass REST]  ──> 加权资金费率（每 10s）
-       │
-       ▼
-[Polars 处理]     ──> 增量更新 CVD、Volume Profile、多周期对齐
-       │
-       ▼
-[结构模块]        ──> 检测到 15m 出现 CHoCH（看涨）
-[流动性模块]      ──> 检测到下方 Equal Lows 被插针扫荡
-[VSA 模块]        ──> 15m + 1h 看涨背离
-[OI 模块]         ──> 扫荡瞬间 OI 下降（空头平仓）
-[Funding]         ──> 加权费率 -0.012%（极值附近，反向参考）
-       │
-       ▼
-[聚合器]          ──> 生成情境报告，置信度 7.5/10
-       │
-       ▼
-[告警]            ──> Telegram 推送 + Dashboard 高亮
-       │
-       ▼
+[定时调度触发]     ──> 每天 08:05 / 每小时 / 每 4 小时
+        │
+        ▼
+[自动数据拉取]     ──> 回填 K 线 + 更新 OI + 更新资金费率
+        │
+        ▼
+[分析引擎]        ──> 结构/流动性/量价/Wyckoff → 结构化数据
+        │
+        ▼
+[LLM 分析]        ──> 结构化数据 → Prompt → OpenAI API → 报告
+        │
+        ▼
+[推送]            ──> 飞书 / Telegram / 企业微信
+        │
+        ▼
 [用户决策]        ──> 人来决定是否进场、仓位、止损
-       │
-       ▼
-[日志]            ──> 记录交易 + 当时情境快照
 ```
 
 ---
@@ -386,13 +437,8 @@ backfill 数据 → 9 个分析模块 → 7 个子上下文 builder
 | CLI | **typer** | 类型友好、自动帮助文档 |
 | 类型检查 | **mypy strict** + **ruff** | 弥补动态类型，lint 统一 |
 | 测试 | **pytest** + `pytest-asyncio` | 单测 + 集成测（当前 304 个） |
-
-**当前未使用但保留规划**：
-- Web 后端：FastAPI + Uvicorn（Phase 1 切片 4 暂跳过）
-- Web 前端：TradingView Lightweight Charts
-- 推送：Telegram / 企业微信 / 飞书（Phase 3）
-- 部署：Docker（单容器）
-- 调度：APScheduler 或 asyncio 常驻循环
+| 调度 | **APScheduler** | 定时任务，支持 cron 表达式和间隔触发 |
+| LLM | **OpenAI 兼容 API** | 灵活切换 OpenAI / DeepSeek / 本地模型 |
 
 **未来可选升级**：
 - 数据规模 > 10GB → 迁移 ClickHouse
@@ -433,10 +479,10 @@ backfill 数据 → 9 个分析模块 → 7 个子上下文 builder
 - ✅ **切片 3**：情境聚合报告（7 子上下文 + Scorecard + render_text/markdown）
 - ✅ **切片 4**：告警推送（Telegram / 企微 / 飞书，统一 Protocol + 并发分发）
 
-### **Phase 4 — 复盘与回测**
-- K 线回放系统
-- 交易日志 + 情境快照关联
-- 历史规则回测（统计某种情境组合的后续表现）
+### **Phase 4 — AI 分析 + 定时推送（已完成 ✅）**
+- ✅ **切片 1**：LLM 分析模块（OpenAI 兼容 API，结构化 prompt，双语输出）
+- ✅ **切片 2**：定时调度器（APScheduler，每天 8:05 日K / 每小时 1H / 每 4 小时 4H）
+- ✅ **切片 3**：自动数据拉取（分析前自动回填 K 线 + 更新 OI + 更新资金费率）
 
 ---
 
@@ -450,7 +496,8 @@ Price-Action-Trading-Assistant/
 │   ├── __init__.py
 │   ├── config.py               # pydantic-settings 配置管理
 │   ├── logging.py              # structlog 封装
-│   ├── cli.py                  # typer CLI（17 个命令）
+│   ├── cli.py                  # typer CLI
+│   ├── scheduler.py            # 定时调度器 + 自动数据拉取
 │   ├── ingestion/              # 数据接入层（无分析逻辑）
 │   │   ├── _http.py            # 共享 async HTTP 基类（重试 + 代理）
 │   │   ├── binance.py          # Binance Futures REST + OI 历史迭代器
@@ -469,7 +516,8 @@ Price-Action-Trading-Assistant/
 │   │   ├── stop_hunt.py        # Stop Hunt / 流动性扫荡检测
 │   │   ├── divergence.py       # 多指标背离（CVD/Volume/OI）
 │   │   ├── wyckoff.py          # Wyckoff 阶段状态机（FSM）
-│   │   └── context.py          # 情境聚合报告（7 子上下文 + Scorecard）
+│   │   ├── context.py          # 情境聚合报告（7 子上下文 + Scorecard）
+│   │   └── llm.py              # LLM 分析模块（OpenAI 兼容 API）
 │   ├── notifications/          # 推送通道
 │   │   ├── telegram.py         # Telegram Bot API
 │   │   ├── wechat.py           # 企业微信群机器人
@@ -478,27 +526,8 @@ Price-Action-Trading-Assistant/
 │       ├── schema.py           # DuckDB DDL
 │       ├── repository.py       # Database 连接管理
 │       └── writers.py          # 批量 upsert（幂等，Polars → Arrow）
-├── tests/
-│   ├── conftest.py             # 环境隔离 fixture
-│   └── unit/                   # 304 个单测
-│       ├── test_binance.py
-│       ├── test_funding_aggregator.py
-│       ├── test_okx_bybit_rest.py
-│       ├── test_proxy.py
-│       ├── test_writers.py
-│       ├── test_resample.py
-│       ├── test_structure.py
-│       ├── test_volume.py
-│       ├── test_profile.py
-│       ├── test_zones.py
-│       ├── test_liquidity.py
-│       ├── test_stop_hunt.py
-│       ├── test_divergence.py
-│       ├── test_wyckoff.py
-│       ├── test_context.py
-│       └── test_notifications.py
-├── data/                       # DuckDB 文件（.gitignore）
-├── .env.example                # 环境变量模板（含推送渠道占位）
+├── tests/                      # 304 个单测
+├── .env.example                # 环境变量模板
 ├── pyproject.toml              # uv 项目配置 + 依赖
 ├── Makefile                    # make check = lint + typecheck + test
 └── README.md
@@ -516,29 +545,17 @@ Price-Action-Trading-Assistant/
 
 ---
 
-## 十一、当前状态与下一步
+## 十一、当前状态
 
 ### 已完成
 
 | Phase | 内容 | 测试 |
 |---|---|---|
 | 0 | 基础设施 + 5 源资金费率 + 代理 + 回填 | 117 |
-| 1.1 | 多周期重采样 + swing + BOS/CHoCH | +16 |
-| 1.2 | Delta/CVD + VWAP + Volume Profile | +29 |
-| 1.3 | Order Block + FVG + mitigation | +19 |
-| 2.1 | Equal Highs/Lows 流动性池 | +18 |
-| 2.2 | Stop Hunt 检测 | +20 |
-| 2.3 | 多指标背离（CVD/Volume/OI）+ OI 回填 | +27 |
-| 3.1 | Wyckoff 阶段状态机（11 状态 + 12 事件） | +28 |
-| 3.2 | 完善事件检测器（AR/ST/SOS/LPS + 1H 闸控） | +7 |
-| 3.3 | 情境聚合报告（7 子上下文 + Scorecard + 渲染器） | +27 |
-| 3.4 | 告警推送（Telegram / 企微 / 飞书） | +15 |
+| 1 | 分析引擎（结构/量价/订单块/FVG） | +64 |
+| 2 | 流动性引擎（池/Stop Hunt/背离） | +65 |
+| 3 | 上下文聚合 + Wyckoff + 告警推送 | +77 |
+| 4 | AI 分析 + 定时调度 + 自动数据拉取 | +15 |
 | **合计** | | **304** |
-
-### 下一步优先级
-
-1. **Phase 2 切片 4 — 爆仓热力图**：待 Binance WebSocket forceOrder 流接入
-2. **定时任务 / 常驻服务**：让数据自动持续更新 + 定时推送告警
-3. **Phase 4 — 复盘与回测**：K 线回放 + 交易日志关联情境快照
 
 > *"The market does not care about your indicators. It cares about liquidity."*
