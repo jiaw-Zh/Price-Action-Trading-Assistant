@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     # ---------- Coinglass ----------
     coinglass_api_key: SecretStr | None = None
 
+    # ---------- LLM ----------
+    llm_api_key: SecretStr | None = None
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_model: str = "gpt-4o"
+    llm_max_tokens: int = 2000
+
     # ---------- Telegram ----------
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None

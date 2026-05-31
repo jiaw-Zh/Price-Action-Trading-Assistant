@@ -1552,31 +1552,145 @@ def send_alert(
 # ---------------------------------------------------------------------------
 
 
-@app.command()
-def serve(
-    host: str = typer.Option("0.0.0.0", help="Bind host."),
-    port: int = typer.Option(8000, help="Bind port."),
-    reload: bool = typer.Option(False, help="Enable auto-reload for development."),
+@app.command(name="ai-analyze")
+def ai_analyze(
+    timeframe: str = typer.Option("1h", help="Working timeframe (1h/4h/1d)."),
+    htf: str | None = typer.Option(None, help="Higher timeframe for trend alignment."),
+    language: str = typer.Option("zh", help="Report language (zh/en)."),
+    dry_run: bool = typer.Option(False, help="Print report without sending."),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
 ) -> None:
-    """Start the web server."""
-    import uvicorn
+    """Run AI analysis and push to notification channels."""
+    from pa_assistant.analysis.llm import LLMConfig, analyze_with_llm
+    from pa_assistant.notifications import NotificationMessage, configured_channels, send_to_all
+    from pa_assistant.scheduler import collect_market_data
+
+    settings = get_settings()
+    _bootstrap(settings)
+    log = get_logger("cli.ai_analyze")
+
+    sym = (symbol or settings.symbol).upper()
+    log.info("ai_analyze_start", symbol=sym, timeframe=timeframe, htf=htf)
+
+    # 1. Collect market data
+    try:
+        market_data = collect_market_data(settings, timeframe, htf=htf)
+    except ValueError as e:
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+    # 2. Check LLM config
+    if not settings.llm_api_key:
+        typer.secho(
+            "LLM API key not configured. Set LLM_API_KEY in .env",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+
+    llm_config = LLMConfig(
+        api_key=settings.llm_api_key.get_secret_value(),
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        max_tokens=settings.llm_max_tokens,
+    )
+
+    # 3. Call LLM
+    typer.echo(f"Calling LLM ({settings.llm_model})...")
+    report = asyncio.run(
+        analyze_with_llm(
+            market_data,
+            llm_config,
+            language=language,
+            proxy_url=settings.http_proxy_url,
+        )
+    )
+
+    # 4. Build message
+    tf_label = timeframe.upper()
+    title = f"[{sym} {tf_label}] AI 分析报告"
+    message = NotificationMessage(title=title, body=report, format="markdown")
+
+    if dry_run:
+        typer.secho("[dry-run] would send:", fg=typer.colors.YELLOW, bold=True)
+        typer.echo(f"\nTitle: {message.title}\n")
+        typer.echo(message.body)
+        return
+
+    # 5. Push to channels
+    channels = configured_channels(settings)
+    if not channels:
+        typer.secho(
+            "No notification channels configured. "
+            "Set TELEGRAM_BOT_TOKEN, WECHAT_WORK_WEBHOOK_URL, or LARK_WEBHOOK_URL in .env",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=2)
+
+    typer.echo(f"Dispatching to {len(channels)} channel(s)...")
+    outcome = asyncio.run(send_to_all(channels, message))
+    successes = [name for name, err in outcome.items() if err is None]
+    failures = [name for name, err in outcome.items() if err is not None]
+
+    for name in successes:
+        typer.secho(f"  ✓ {name}", fg=typer.colors.GREEN)
+    for name in failures:
+        err = outcome[name]
+        typer.secho(f"  ✗ {name}: {err}", fg=typer.colors.RED)
+
+    if failures and not successes:
+        raise typer.Exit(code=1)
+
+
+@app.command(name="schedule-start")
+def schedule_start(
+    language: str = typer.Option("zh", help="Report language (zh/en)."),
+) -> None:
+    """Start the scheduled analysis scheduler.
+
+    Scheduled jobs:
+    * Daily 08:05 (Beijing): 1D K-line analysis
+    * Every hour: 1H K-line analysis
+    * Every 4 hours: 4H K-line analysis
+    """
+    import signal
+
+    from pa_assistant.scheduler import create_scheduler
+
+    settings = get_settings()
+    _bootstrap(settings)
 
     typer.secho(
-        f"Starting PA Assistant web server on {host}:{port}",
+        "Starting PA Assistant Scheduler",
         fg=typer.colors.GREEN,
         bold=True,
     )
-    typer.echo(f"  Dashboard:  http://localhost:{port}/")
-    typer.echo(f"  Liquidity:  http://localhost:{port}/liquidity")
-    typer.echo(f"  Backtest:   http://localhost:{port}/backtest")
+    typer.echo("")
+    typer.echo("Scheduled jobs:")
+    typer.echo("  • 每天 08:05 (北京时间): 日K 分析")
+    typer.echo("  • 每小时: 1H K 线分析")
+    typer.echo("  • 每 4 小时: 4H K 线分析")
+    typer.echo("")
+    typer.echo("Press Ctrl+C to stop")
     typer.echo("")
 
-    uvicorn.run(
-        "pa_assistant.web.app:app",
-        host=host,
-        port=port,
-        reload=reload,
-    )
+    scheduler = create_scheduler(language=language)
+    scheduler.start()
+
+    # Keep the main thread alive
+    try:
+        signal.pause()
+    except AttributeError:
+        # Windows doesn't have signal.pause()
+        import time
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+
+    scheduler.shutdown()
+    typer.echo("\nScheduler stopped.")
 
 
 if __name__ == "__main__":
