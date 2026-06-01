@@ -5,6 +5,13 @@ Run ``pa --help`` after installing the package (or ``uv run pa --help``).
 
 from __future__ import annotations
 
+import sys
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 import asyncio
 import json
 import time
