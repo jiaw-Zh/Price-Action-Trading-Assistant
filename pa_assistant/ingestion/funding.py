@@ -4,7 +4,8 @@ The :class:`FundingProvider` Protocol decouples *how* the rate is sourced from
 *where* it is consumed. Two implementations ship here:
 
 * :class:`SelfAggregatedFundingProvider` — pulls funding rate + OI from
-  Binance / OKX / Bybit and computes the OI-weighted average ourselves.
+  Binance / OKX / Bitget / Gate.io and computes the OI-weighted average ourselves.
+  Bybit data is sourced via CoinGecko to avoid IP restrictions.
   Uses only public endpoints — no API keys, no payment.
 * :class:`CoinglassFundingProvider` — *stub*. Will eventually wrap the
   Coinglass paid REST API; until then it raises :class:`NotImplementedError`.
@@ -35,7 +36,6 @@ from typing import Final, Protocol
 from pa_assistant.config import Settings
 from pa_assistant.ingestion.binance import BinanceRestClient
 from pa_assistant.ingestion.bitget import BitgetRestClient
-from pa_assistant.ingestion.bybit import BybitRestClient
 from pa_assistant.ingestion.gateio import GateioRestClient
 from pa_assistant.ingestion.okx import OkxRestClient
 from pa_assistant.logging import get_logger
@@ -131,8 +131,9 @@ def _resolve_symbols(symbol: str) -> dict[str, str]:
 
 
 class SelfAggregatedFundingProvider:
-    """Computes OI-weighted funding rate from Binance + OKX + Bybit + Bitget + Gate.io.
+    """Computes OI-weighted funding rate from Binance + OKX + Bybit(via CoinGecko) + Bitget + Gate.io.
 
+    Bybit data is sourced via CoinGecko derivatives API to avoid IP restrictions.
     The exchange clients are injected so tests can swap in mocks.
     Closing the provider closes all owned underlying clients.
     """
@@ -144,7 +145,6 @@ class SelfAggregatedFundingProvider:
         *,
         binance: BinanceRestClient,
         okx: OkxRestClient,
-        bybit: BybitRestClient,
         bitget: BitgetRestClient,
         gateio: GateioRestClient,
         duckdb_path: Path | None = None,
@@ -154,7 +154,6 @@ class SelfAggregatedFundingProvider:
     ) -> None:
         self.binance = binance
         self.okx = okx
-        self.bybit = bybit
         self.bitget = bitget
         self.gateio = gateio
         self.duckdb_path = duckdb_path
@@ -173,7 +172,6 @@ class SelfAggregatedFundingProvider:
         return cls(
             binance=BinanceRestClient.from_settings(settings),
             okx=OkxRestClient(proxy=proxy),
-            bybit=BybitRestClient(proxy=proxy),
             bitget=BitgetRestClient(proxy=proxy),
             gateio=GateioRestClient(proxy=proxy),
             duckdb_path=settings.duckdb_path,
@@ -182,12 +180,10 @@ class SelfAggregatedFundingProvider:
             proxy=proxy,
         )
 
-
     async def aclose(self) -> None:
         await asyncio.gather(
             self.binance.aclose(),
             self.okx.aclose(),
-            self.bybit.aclose(),
             self.bitget.aclose(),
             self.gateio.aclose(),
             return_exceptions=True,
@@ -223,7 +219,7 @@ class SelfAggregatedFundingProvider:
         if funding_rate is None or oi_val is None:
             if self.coingecko_api_key:
                 # In production (with CoinGecko API key set):
-                # Query CoinGecko, fallback to Bybit. Never query direct Binance network.
+                # Query CoinGecko, never query direct Binance network.
                 try:
                     from pa_assistant.ingestion.coingecko import (
                         CoinGeckoRestClient,
@@ -245,10 +241,10 @@ class SelfAggregatedFundingProvider:
                                 snapshot_time = cg_data["timestamp"]
                                 log.info("binance_oi_coingecko_primary_success", oi=oi_val, time=snapshot_time)
                 except Exception as cg_err:
-                    log.warning("coingecko_primary_fetch_failed_trying_bybit_fallback", error=str(cg_err))
+                    log.warning("coingecko_primary_fetch_failed", error=str(cg_err))
             else:
                 # In tests (with CoinGecko API key unset):
-                # Query direct Binance REST client, fallback to Bybit.
+                # Query direct Binance REST client.
                 try:
                     if funding_rate is None:
                         funding = await self.binance.get_funding_rate(sym)
@@ -260,26 +256,11 @@ class SelfAggregatedFundingProvider:
                 except Exception as binance_net_err:
                     log.warning("binance_network_direct_fallback_failed", error=str(binance_net_err))
 
-        # 3. Fallback to Bybit if both CoinGecko and direct Binance failed / weren't configured
-        if funding_rate is None or oi_val is None:
-            try:
-                if funding_rate is None:
-                    bybit_funding = await self.bybit.get_funding_rate(sym)
-                    funding_rate = float(bybit_funding["fundingRate"])
-                    log.info("binance_funding_bybit_fallback_success", rate=funding_rate)
-                if oi_val is None:
-                    bybit_oi = await self.bybit.get_open_interest(sym)
-                    oi_val = float(bybit_oi["openInterest"])
-                    snapshot_time = _ms_to_naive_utc(int(bybit_oi["timestamp"]))
-                    log.info("binance_oi_bybit_fallback_success", oi=oi_val, time=snapshot_time)
-            except Exception as bybit_err:
-                log.error("binance_bybit_fallback_failed", error=str(bybit_err))
-
         # Ensure we have all required fields before returning snapshot
         if funding_rate is None:
-            raise RuntimeError("Failed to retrieve Binance funding rate after CoinGecko, network and Bybit fallbacks.")
+            raise RuntimeError("Failed to retrieve Binance funding rate after CoinGecko and network fallbacks.")
         if oi_val is None:
-            raise RuntimeError("Failed to retrieve Binance open interest after database, CoinGecko, network and Bybit fallbacks.")
+            raise RuntimeError("Failed to retrieve Binance open interest after database, CoinGecko and network fallbacks.")
 
         if snapshot_time is None:
             snapshot_time = datetime.now(UTC).replace(tzinfo=None)
@@ -309,17 +290,36 @@ class SelfAggregatedFundingProvider:
         )
 
     async def _fetch_bybit(self, symbol: str) -> ExchangeFundingSnapshot:
-        funding, oi = await asyncio.gather(
-            self.bybit.get_funding_rate(symbol),
-            self.bybit.get_open_interest(symbol),
+        """Fetch Bybit funding + OI via CoinGecko derivatives API to avoid IP restrictions."""
+        if not self.coingecko_api_key:
+            raise RuntimeError("CoinGecko API key required to fetch Bybit data (direct Bybit API removed)")
+
+        from pa_assistant.ingestion.coingecko import (
+            CoinGeckoRestClient,
+            parse_coingecko_bybit_ticker,
         )
-        return ExchangeFundingSnapshot(
-            exchange="bybit",
-            funding_rate=float(funding["fundingRate"]),
-            # Bybit linear BTCUSDT: 1 contract = 1 BTC, so this is base.
-            open_interest_base=float(oi["openInterest"]),
-            snapshot_time=_ms_to_naive_utc(int(oi["timestamp"])),
-        )
+
+        async with CoinGeckoRestClient(
+            base_url=self.coingecko_base_url,
+            api_key=self.coingecko_api_key,
+            proxy=self.proxy,
+        ) as cg_client:
+            ticker = await cg_client.get_bybit_futures_ticker(symbol)
+            if not ticker:
+                raise RuntimeError(f"Bybit ticker not found on CoinGecko for {symbol!r}")
+
+            data = parse_coingecko_bybit_ticker(ticker)
+            log.info(
+                "bybit_via_coingecko_success",
+                rate=data["funding_rate"],
+                oi=data["open_interest_base"],
+            )
+            return ExchangeFundingSnapshot(
+                exchange="bybit",
+                funding_rate=data["funding_rate"],
+                open_interest_base=data["open_interest_base"],
+                snapshot_time=data["timestamp"],
+            )
 
     async def _fetch_bitget(self, symbol: str) -> ExchangeFundingSnapshot:
         funding, oi = await asyncio.gather(

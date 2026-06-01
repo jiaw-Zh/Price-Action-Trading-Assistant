@@ -75,17 +75,25 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
             end_ms = int(time.time() * 1000)
             start_ms = end_ms - days * 86_400_000
 
-            # Try Bybit first to completely bypass Binance 418/302 blocks
+            # Try OKX first to completely bypass Binance 418/302 blocks
             try:
-                from pa_assistant.ingestion.bybit import BybitRestClient, bybit_klines_to_polars
-                async with BybitRestClient(proxy=settings.http_proxy_url) as client:
-                    page = await client.get_klines(sym, "1m", start_ms=start_ms, end_ms=end_ms)
-                    df = bybit_klines_to_polars(page, sym)
-                    with open_db(settings.duckdb_path) as db:
-                        total = upsert_klines_1m(db, df)
-                log.info("fetch_klines_bybit_primary_done", symbol=sym, written=total)
-            except Exception as bybit_err:
-                log.warning("bybit_fetch_klines_failed_trying_binance_fallback", error=str(bybit_err))
+                from pa_assistant.ingestion.okx import (
+                    OkxRestClient,
+                    okx_klines_to_polars,
+                    okx_symbol,
+                )
+                okx_inst = okx_symbol(sym)
+                async with OkxRestClient(proxy=settings.http_proxy_url) as client:
+                    total = 0
+                    async for page in client.iter_klines(
+                        okx_inst, "1m", start_ms=start_ms, end_ms=end_ms
+                    ):
+                        df = okx_klines_to_polars(page, sym)
+                        with open_db(settings.duckdb_path) as db:
+                            total += upsert_klines_1m(db, df)
+                log.info("fetch_klines_okx_primary_done", symbol=sym, written=total)
+            except Exception as okx_err:
+                log.warning("okx_fetch_klines_failed_trying_binance_fallback", error=str(okx_err))
                 from pa_assistant.ingestion import BinanceRestClient, klines_to_polars
                 async with BinanceRestClient.from_settings(settings) as client:
                     with open_db(settings.duckdb_path) as db:
@@ -130,23 +138,10 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
                         else:
                             raise ValueError("Binance ticker not found on CoinGecko")
                 except Exception as cg_err:
-                    log.warning("coingecko_primary_oi_fetch_failed_trying_bybit_fallback", error=str(cg_err))
+                    log.warning("coingecko_primary_oi_fetch_failed_trying_binance_direct", error=str(cg_err))
 
-            # 2. Fallback to Bybit if CoinGecko was configured but failed, or if CoinGecko key not set
+            # 2. Try direct Binance network if CoinGecko failed or was not configured
             if open_interest is None:
-                try:
-                    from pa_assistant.ingestion.bybit import BybitRestClient
-                    async with BybitRestClient(proxy=settings.http_proxy_url) as client:
-                        payload = await client.get_open_interest(sym)
-                    ts_ms = int(str(payload.get("timestamp", time.time() * 1000)))
-                    timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
-                    open_interest = float(str(payload.get("openInterest", 0.0)))
-                    log.info("binance_oi_bybit_success", oi=open_interest, time=timestamp)
-                except Exception as bybit_err:
-                    log.warning("bybit_oi_failed", error=str(bybit_err))
-
-            # 3. Try direct Binance network ONLY if both CoinGecko and Bybit failed AND CoinGecko key was NOT set (e.g. in test envs)
-            if open_interest is None and not settings.coingecko_api_key:
                 try:
                     from pa_assistant.ingestion import BinanceRestClient
                     async with BinanceRestClient.from_settings(settings) as client:
@@ -154,9 +149,9 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
                     ts_ms = int(str(payload["time"]))
                     timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
                     open_interest = float(str(payload["openInterest"]))
-                    log.info("binance_oi_direct_binance_last_resort_success", oi=open_interest, time=timestamp)
+                    log.info("binance_oi_direct_success", oi=open_interest, time=timestamp)
                 except Exception as binance_err:
-                    log.error("binance_oi_direct_binance_last_resort_failed", error=str(binance_err))
+                    log.error("binance_oi_direct_failed", error=str(binance_err))
 
             if open_interest is None:
                 raise RuntimeError("Failed to retrieve open interest after all fallbacks.")

@@ -15,7 +15,6 @@ import pytest
 from pa_assistant.config import Settings
 from pa_assistant.ingestion._http import AsyncRestClient
 from pa_assistant.ingestion.binance import BinanceRestClient
-from pa_assistant.ingestion.bybit import BybitRestClient
 from pa_assistant.ingestion.funding import (
     SelfAggregatedFundingProvider,
     make_funding_provider,
@@ -105,7 +104,7 @@ def test_binance_from_settings_threads_proxy(
     assert captured["proxy"] == "http://127.0.0.1:7890"
 
 
-def test_self_aggregated_provider_threads_proxy_to_okx_and_bybit(
+def test_self_aggregated_provider_threads_proxy_to_okx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("HTTP_PROXY_URL", "http://127.0.0.1:7890")
@@ -113,11 +112,9 @@ def test_self_aggregated_provider_threads_proxy_to_okx_and_bybit(
     provider = SelfAggregatedFundingProvider.from_settings(settings)
 
     captured_okx = _client_kwargs_when_constructed(provider.okx)
-    captured_bybit = _client_kwargs_when_constructed(provider.bybit)
     captured_binance = _client_kwargs_when_constructed(provider.binance)
 
     assert captured_okx["proxy"] == "http://127.0.0.1:7890"
-    assert captured_bybit["proxy"] == "http://127.0.0.1:7890"
     assert captured_binance["proxy"] == "http://127.0.0.1:7890"
 
 
@@ -133,9 +130,7 @@ def test_make_funding_provider_threads_proxy(
     assert captured_okx["proxy"] == "http://127.0.0.1:7890"
 
 
-def test_okx_and_bybit_default_no_proxy() -> None:
+def test_okx_default_no_proxy() -> None:
     """When constructed directly without proxy=, no proxy is set."""
     okx = OkxRestClient()
-    bybit = BybitRestClient()
     assert "proxy" not in _client_kwargs_when_constructed(okx)
-    assert "proxy" not in _client_kwargs_when_constructed(bybit)

@@ -1,7 +1,8 @@
 """CoinGecko API client for public derivatives tickers.
 
 Used as a robust, WAF-proof and geo-compliant fallback to retrieve
-Binance Futures funding rates and open interest when direct Binance calls fail.
+Binance and Bybit Futures funding rates and open interest when direct
+exchange API calls fail.
 """
 
 from __future__ import annotations
@@ -45,7 +46,6 @@ class CoinGeckoRestClient(AsyncRestClient):
 
         super().__init__(base_url=base_url, headers=headers, **kwargs)
 
-
     async def get_derivatives_tickers(self) -> list[dict[str, Any]]:
         """Fetch all derivatives tickers from CoinGecko.
 
@@ -58,15 +58,13 @@ class CoinGeckoRestClient(AsyncRestClient):
             return []
         return result
 
-    async def get_binance_futures_ticker(
-        self, symbol: str = "BTCUSDT"
+    def _find_ticker(
+        self,
+        tickers: list[dict[str, Any]],
+        exchange_keyword: str,
+        symbol: str,
     ) -> dict[str, Any] | None:
-        """Get the specific Binance Futures ticker and normalize it.
-
-        Returns normalized dictionary with ``funding_rate``, ``open_interest_base``,
-        and ``timestamp``, or ``None`` if not found.
-        """
-        tickers = await self.get_derivatives_tickers()
+        """Find a ticker matching *exchange_keyword* in market name and *symbol*."""
         target_sym = symbol.upper()
 
         for t in tickers:
@@ -75,30 +73,69 @@ class CoinGeckoRestClient(AsyncRestClient):
             if not market or not sym:
                 continue
 
-            # CoinGecko represents Binance Futures as "Binance (Futures)" or similar
-            if "Binance" in market and "Futures" in market and (
+            if exchange_keyword in market and (
                 sym.upper() == target_sym or target_sym.startswith(sym.upper())
             ):
-                log.info(
-                    "coingecko_binance_ticker_found",
-                    market=market,
-                    symbol=sym,
-                    funding_rate=t.get("funding_rate"),
-                )
                 return t
 
-        log.warning(
-            "coingecko_binance_ticker_not_found",
-            symbol=target_sym,
-            ticker_count=len(tickers),
-        )
         return None
 
+    async def get_binance_futures_ticker(
+        self, symbol: str = "BTCUSDT"
+    ) -> dict[str, Any] | None:
+        """Get the specific Binance Futures ticker from CoinGecko.
 
-def parse_coingecko_binance_ticker(
-    ticker: dict[str, Any]
+        Returns the raw CoinGecko ticker dict, or ``None`` if not found.
+        """
+        tickers = await self.get_derivatives_tickers()
+        t = self._find_ticker(tickers, "Binance", symbol)
+        if t:
+            log.info(
+                "coingecko_binance_ticker_found",
+                market=t.get("market"),
+                symbol=t.get("symbol"),
+                funding_rate=t.get("funding_rate"),
+            )
+        else:
+            log.warning(
+                "coingecko_binance_ticker_not_found",
+                symbol=symbol.upper(),
+                ticker_count=len(tickers),
+            )
+        return t
+
+    async def get_bybit_futures_ticker(
+        self, symbol: str = "BTCUSDT"
+    ) -> dict[str, Any] | None:
+        """Get the specific Bybit Futures ticker from CoinGecko.
+
+        Returns the raw CoinGecko ticker dict, or ``None`` if not found.
+        """
+        tickers = await self.get_derivatives_tickers()
+        t = self._find_ticker(tickers, "Bybit", symbol)
+        if t:
+            log.info(
+                "coingecko_bybit_ticker_found",
+                market=t.get("market"),
+                symbol=t.get("symbol"),
+                funding_rate=t.get("funding_rate"),
+            )
+        else:
+            log.warning(
+                "coingecko_bybit_ticker_not_found",
+                symbol=symbol.upper(),
+                ticker_count=len(tickers),
+            )
+        return t
+
+
+def parse_coingecko_ticker(
+    ticker: dict[str, Any],
 ) -> dict[str, Any]:
-    """Parse raw CoinGecko ticker into normalized futures metrics.
+    """Parse raw CoinGecko derivatives ticker into normalized futures metrics.
+
+    Works for any exchange ticker (Binance, Bybit, etc.) since the CoinGecko
+    derivatives response uses the same fields for all exchanges.
 
     Converts Open Interest from USD notional to base asset units.
     """
@@ -118,3 +155,8 @@ def parse_coingecko_binance_ticker(
         "open_interest_base": oi_base,
         "timestamp": timestamp,
     }
+
+
+# Keep backward-compatible aliases
+parse_coingecko_binance_ticker = parse_coingecko_ticker
+parse_coingecko_bybit_ticker = parse_coingecko_ticker

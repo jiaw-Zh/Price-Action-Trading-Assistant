@@ -9,6 +9,7 @@ handling rather than HTTP details (those are covered in test_*_rest.py).
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -16,7 +17,6 @@ import pytest
 from pa_assistant.config import Settings
 from pa_assistant.ingestion.binance import BinanceRestClient
 from pa_assistant.ingestion.bitget import BitgetRestClient
-from pa_assistant.ingestion.bybit import BybitRestClient
 from pa_assistant.ingestion.funding import (
     CoinglassFundingProvider,
     SelfAggregatedFundingProvider,
@@ -69,27 +69,6 @@ class _FakeOkx(OkxRestClient):
         return None
 
 
-class _FakeBybit(BybitRestClient):
-    def __init__(self, funding: dict[str, Any] | None, oi: dict[str, Any] | None) -> None:
-        self._funding = funding
-        self._oi = oi
-
-    async def get_funding_rate(self, symbol: str) -> dict[str, Any]:
-        if self._funding is None:
-            raise RuntimeError("bybit funding fetch failed (simulated)")
-        return self._funding
-
-    async def get_open_interest(
-        self, symbol: str, *, interval_time: str = "5min"
-    ) -> dict[str, Any]:
-        if self._oi is None:
-            raise RuntimeError("bybit OI fetch failed (simulated)")
-        return self._oi
-
-    async def aclose(self) -> None:
-        return None
-
-
 class _FakeBitget(BitgetRestClient):
     def __init__(self, funding: dict[str, Any] | None, oi: dict[str, Any] | None) -> None:
         self._funding = funding
@@ -129,8 +108,27 @@ BINANCE_OI = {"symbol": "BTCUSDT", "openInterest": "100000", "time": 17000000000
 OKX_FUNDING = {"instId": "BTC-USDT-SWAP", "fundingRate": "0.0002"}
 OKX_OI = {"instId": "BTC-USDT-SWAP", "oiCcy": "50000", "ts": "1700000000000"}
 
-BYBIT_FUNDING = {"symbol": "BTCUSDT", "fundingRate": "-0.0001"}
-BYBIT_OI = {"symbol": "BTCUSDT", "openInterest": "30000", "timestamp": "1700000000000"}
+# CoinGecko Binance ticker (used to mock CoinGecko response for Binance)
+COINGECKO_BINANCE_TICKER = {
+    "market": "Binance (Futures)",
+    "symbol": "BTCUSDT",
+    "funding_rate": 0.0001,
+    "open_interest": 3000000000.0,  # USD notional
+    "price": 30000.0,
+    "last_traded_at": 1700000000,
+}
+# Binance OI in base = 3000000000 / 30000 = 100000 BTC
+
+# CoinGecko Bybit ticker (used to mock CoinGecko response for Bybit)
+COINGECKO_BYBIT_TICKER = {
+    "market": "Bybit",
+    "symbol": "BTCUSDT",
+    "funding_rate": -0.0001,
+    "open_interest": 900000000.0,  # USD notional
+    "price": 30000.0,
+    "last_traded_at": 1700000000,
+}
+# Bybit OI in base = 900000000 / 30000 = 30000 BTC
 
 BITGET_FUNDING = {"symbol": "BTCUSDT", "fundingRate": "0.0003"}
 BITGET_OI = {"symbol": "BTCUSDT", "size": "20000"}
@@ -147,18 +145,40 @@ def _provider(
     *,
     binance: _FakeBinance | None = None,
     okx: _FakeOkx | None = None,
-    bybit: _FakeBybit | None = None,
     bitget: _FakeBitget | None = None,
     gateio: _FakeGateio | None = None,
+    coingecko_api_key: str | None = None,
 ) -> SelfAggregatedFundingProvider:
     """Build a provider with defaults for all exchanges (success payloads)."""
     return SelfAggregatedFundingProvider(
         binance=binance or _FakeBinance(BINANCE_FUNDING, BINANCE_OI),
         okx=okx or _FakeOkx(OKX_FUNDING, OKX_OI),
-        bybit=bybit or _FakeBybit(BYBIT_FUNDING, BYBIT_OI),
         bitget=bitget or _FakeBitget(BITGET_FUNDING, BITGET_OI),
         gateio=gateio or _FakeGateio(GATEIO_CONTRACT),
+        coingecko_api_key=coingecko_api_key,
     )
+
+
+def _mock_coingecko_client() -> Any:
+    """Create a mock CoinGecko client instance that returns both Binance and Bybit ticker data."""
+
+    class _MockCoinGeckoClient:
+        def __init__(self, **kwargs: Any):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get_binance_futures_ticker(self, symbol: str) -> dict[str, Any] | None:
+            return COINGECKO_BINANCE_TICKER
+
+        async def get_bybit_futures_ticker(self, symbol: str) -> dict[str, Any] | None:
+            return COINGECKO_BYBIT_TICKER
+
+    return _MockCoinGeckoClient()
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +188,13 @@ def _provider(
 
 async def test_aggregator_all_five_succeed() -> None:
     """Verify the OI-weighted average when every exchange returns data."""
-    provider = _provider()
-    result = await provider.get_weighted_funding("BTCUSDT")
+    provider = _provider(coingecko_api_key="fake-key")
+
+    with patch(
+        "pa_assistant.ingestion.coingecko.CoinGeckoRestClient",
+        return_value=_mock_coingecko_client(),
+    ):
+        result = await provider.get_weighted_funding("BTCUSDT")
 
     # Manual math:
     # binance: +0.0001 * 100000 = 10
@@ -191,8 +216,13 @@ async def test_aggregator_all_five_succeed() -> None:
 
 async def test_aggregator_one_exchange_fails() -> None:
     """If OKX fails, weighted average comes from the other 4."""
-    provider = _provider(okx=_FakeOkx(None, None))
-    result = await provider.get_weighted_funding("BTCUSDT")
+    provider = _provider(okx=_FakeOkx(None, None), coingecko_api_key="fake-key")
+
+    with patch(
+        "pa_assistant.ingestion.coingecko.CoinGeckoRestClient",
+        return_value=_mock_coingecko_client(),
+    ):
+        result = await provider.get_weighted_funding("BTCUSDT")
 
     # Without OKX: numerator = 10 - 3 + 6 + 0.0015 = 13.0015
     # denominator = 100000 + 30000 + 20000 + 10 = 150010
@@ -206,7 +236,6 @@ async def test_aggregator_four_exchanges_fail() -> None:
     provider = _provider(
         binance=_FakeBinance(BINANCE_FUNDING, BINANCE_OI),
         okx=_FakeOkx(None, None),
-        bybit=_FakeBybit(None, None),
         bitget=_FakeBitget(None, None),
         gateio=_FakeGateio(None),
     )
@@ -220,7 +249,6 @@ async def test_aggregator_all_fail_raises() -> None:
     provider = _provider(
         binance=_FakeBinance(None, None),
         okx=_FakeOkx(None, None),
-        bybit=_FakeBybit(None, None),
         bitget=_FakeBitget(None, None),
         gateio=_FakeGateio(None),
     )
@@ -240,7 +268,6 @@ async def test_aggregator_zero_total_oi_raises() -> None:
     provider = _provider(
         binance=_FakeBinance(BINANCE_FUNDING, {**BINANCE_OI, "openInterest": "0"}),
         okx=_FakeOkx(OKX_FUNDING, {**OKX_OI, "oiCcy": "0"}),
-        bybit=_FakeBybit(BYBIT_FUNDING, {**BYBIT_OI, "openInterest": "0"}),
         bitget=_FakeBitget(BITGET_FUNDING, {**BITGET_OI, "size": "0"}),
         gateio=_FakeGateio({**GATEIO_CONTRACT, "position_size": "0"}),
     )
@@ -302,9 +329,14 @@ def test_make_funding_provider_treats_blank_coinglass_key_as_unset(
 
 
 async def test_components_carry_correct_per_exchange_data() -> None:
-    provider = _provider()
+    provider = _provider(coingecko_api_key="fake-key")
 
-    result = await provider.get_weighted_funding("BTCUSDT")
+    with patch(
+        "pa_assistant.ingestion.coingecko.CoinGeckoRestClient",
+        return_value=_mock_coingecko_client(),
+    ):
+        result = await provider.get_weighted_funding("BTCUSDT")
+
     by_exchange = {c.exchange: c for c in result.components}
 
     assert by_exchange["binance"].funding_rate == pytest.approx(0.0001)
@@ -317,6 +349,38 @@ async def test_components_carry_correct_per_exchange_data() -> None:
     assert by_exchange["bitget"].open_interest_base == pytest.approx(20_000.0)
     assert by_exchange["gateio"].funding_rate == pytest.approx(0.00015)
     assert by_exchange["gateio"].open_interest_base == pytest.approx(10.0)
+
+
+# ---------------------------------------------------------------------------
+# Bybit via CoinGecko
+# ---------------------------------------------------------------------------
+
+
+async def test_bybit_via_coingecko_requires_api_key() -> None:
+    """Bybit fetch should fail gracefully when CoinGecko API key is not set."""
+    provider = _provider()  # no coingecko_api_key
+    result = await provider.get_weighted_funding("BTCUSDT")
+    # Bybit should be absent from components (it failed)
+    exchanges = {c.exchange for c in result.components}
+    assert "bybit" not in exchanges
+    await provider.aclose()
+
+
+async def test_bybit_via_coingecko_success() -> None:
+    """Bybit data should come from CoinGecko when API key is set."""
+    provider = _provider(coingecko_api_key="fake-key")
+
+    with patch(
+        "pa_assistant.ingestion.coingecko.CoinGeckoRestClient",
+        return_value=_mock_coingecko_client(),
+    ):
+        result = await provider.get_weighted_funding("BTCUSDT")
+
+    by_exchange = {c.exchange: c for c in result.components}
+    assert "bybit" in by_exchange
+    assert by_exchange["bybit"].funding_rate == pytest.approx(-0.0001)
+    assert by_exchange["bybit"].open_interest_base == pytest.approx(30_000.0)
+    await provider.aclose()
 
 
 # ---------------------------------------------------------------------------
