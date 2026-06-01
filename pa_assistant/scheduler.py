@@ -77,7 +77,25 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
             end_ms = int(time.time() * 1000)
             start_ms = end_ms - days * 86_400_000
 
+        # 1. Backfill klines
+        try:
+            from pa_assistant.storage import open_db, upsert_klines_1m
+
+            end_ms = int(time.time() * 1000)
+            start_ms = end_ms - days * 86_400_000
+
+            # Try Bybit first to completely bypass Binance 418/302 blocks
             try:
+                from pa_assistant.ingestion.bybit import BybitRestClient, bybit_klines_to_polars
+                async with BybitRestClient(proxy=settings.http_proxy_url) as client:
+                    page = await client.get_klines(sym, "1m", start_ms=start_ms, end_ms=end_ms)
+                    df = bybit_klines_to_polars(page, sym)
+                    with open_db(settings.duckdb_path) as db:
+                        total = upsert_klines_1m(db, df)
+                log.info("fetch_klines_bybit_primary_done", symbol=sym, written=total)
+            except Exception as bybit_err:
+                log.warning("bybit_fetch_klines_failed_trying_binance_fallback", error=str(bybit_err))
+                from pa_assistant.ingestion import BinanceRestClient, klines_to_polars
                 async with BinanceRestClient.from_settings(settings) as client:
                     with open_db(settings.duckdb_path) as db:
                         total = 0
@@ -86,16 +104,7 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
                         ):
                             df = klines_to_polars(page, sym)
                             total += upsert_klines_1m(db, df)
-                log.info("fetch_klines_done", symbol=sym, written=total)
-            except Exception as binance_err:
-                log.warning("binance_fetch_klines_failed_trying_bybit_fallback", error=str(binance_err))
-                from pa_assistant.ingestion.bybit import BybitRestClient, bybit_klines_to_polars
-                async with BybitRestClient(proxy=settings.http_proxy_url) as client:
-                    page = await client.get_klines(sym, "1m", start_ms=start_ms, end_ms=end_ms)
-                    df = bybit_klines_to_polars(page, sym)
-                    with open_db(settings.duckdb_path) as db:
-                        total = upsert_klines_1m(db, df)
-                log.info("fetch_klines_bybit_fallback_done", symbol=sym, written=total)
+                log.info("fetch_klines_binance_fallback_done", symbol=sym, written=total)
         except Exception as e:
             log.error("fetch_klines_failed", error=str(e))
 
@@ -106,15 +115,32 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
 
             log.info("fetch_oi_start", symbol=sym)
 
-            try:
-                from pa_assistant.ingestion import BinanceRestClient
-                async with BinanceRestClient.from_settings(settings) as client:
-                    payload = await client.get_open_interest(sym)
-                ts_ms = int(str(payload["time"]))
-                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
-                open_interest = float(str(payload["openInterest"]))
-            except Exception as binance_err:
-                log.warning("binance_fetch_oi_failed_trying_bybit_fallback", error=str(binance_err))
+            open_interest = None
+            timestamp = None
+
+            # 1. Try CoinGecko first to avoid WAF blocks and geo-blocks
+            if settings.coingecko_api_key:
+                try:
+                    from pa_assistant.ingestion.coingecko import CoinGeckoRestClient, parse_coingecko_binance_ticker
+                    cg_key = settings.coingecko_api_key.get_secret_value()
+                    async with CoinGeckoRestClient(
+                        base_url=settings.coingecko_base_url,
+                        api_key=cg_key,
+                        proxy=settings.http_proxy_url,
+                    ) as cg_client:
+                        ticker = await cg_client.get_binance_futures_ticker(sym)
+                        if ticker:
+                            cg_data = parse_coingecko_binance_ticker(ticker)
+                            open_interest = cg_data["open_interest_base"]
+                            timestamp = cg_data["timestamp"]
+                            log.info("binance_oi_coingecko_primary_success", oi=open_interest, time=timestamp)
+                        else:
+                            raise ValueError("Binance ticker not found on CoinGecko")
+                except Exception as cg_err:
+                    log.warning("coingecko_primary_oi_fetch_failed_trying_bybit_fallback", error=str(cg_err))
+
+            # 2. Fallback to Bybit if CoinGecko was configured but failed, or if CoinGecko key not set
+            if open_interest is None:
                 try:
                     from pa_assistant.ingestion.bybit import BybitRestClient
                     async with BybitRestClient(proxy=settings.http_proxy_url) as client:
@@ -122,30 +148,25 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
                     ts_ms = int(str(payload.get("timestamp", time.time() * 1000)))
                     timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
                     open_interest = float(str(payload.get("openInterest", 0.0)))
+                    log.info("binance_oi_bybit_success", oi=open_interest, time=timestamp)
                 except Exception as bybit_err:
-                    log.warning("bybit_fetch_oi_failed_trying_coingecko_fallback", error=str(bybit_err))
-                    if settings.coingecko_api_key:
-                        try:
-                            from pa_assistant.ingestion.coingecko import CoinGeckoRestClient, parse_coingecko_binance_ticker
-                            cg_key = settings.coingecko_api_key.get_secret_value()
-                            async with CoinGeckoRestClient(
-                                base_url=settings.coingecko_base_url,
-                                api_key=cg_key,
-                                proxy=settings.http_proxy_url,
-                            ) as cg_client:
-                                ticker = await cg_client.get_binance_futures_ticker(sym)
-                                if ticker:
-                                    cg_data = parse_coingecko_binance_ticker(ticker)
-                                    open_interest = cg_data["open_interest_base"]
-                                    timestamp = cg_data["timestamp"]
-                                    log.info("binance_oi_coingecko_fallback_success", oi=open_interest, time=timestamp)
-                                else:
-                                    raise ValueError("Binance ticker not found on CoinGecko")
-                        except Exception as cg_err:
-                            log.error("coingecko_oi_fallback_failed", error=str(cg_err))
-                            raise bybit_err
-                    else:
-                        raise bybit_err
+                    log.warning("bybit_oi_failed", error=str(bybit_err))
+
+            # 3. Try direct Binance network ONLY if both CoinGecko and Bybit failed AND CoinGecko key was NOT set (e.g. in test envs)
+            if open_interest is None and not settings.coingecko_api_key:
+                try:
+                    from pa_assistant.ingestion import BinanceRestClient
+                    async with BinanceRestClient.from_settings(settings) as client:
+                        payload = await client.get_open_interest(sym)
+                    ts_ms = int(str(payload["time"]))
+                    timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
+                    open_interest = float(str(payload["openInterest"]))
+                    log.info("binance_oi_direct_binance_last_resort_success", oi=open_interest, time=timestamp)
+                except Exception as binance_err:
+                    log.error("binance_oi_direct_binance_last_resort_failed", error=str(binance_err))
+
+            if open_interest is None:
+                raise RuntimeError("Failed to retrieve open interest after all fallbacks.")
 
             with open_db(settings.duckdb_path) as db:
                 insert_oi_snapshot(db, symbol=sym, timestamp=timestamp, open_interest=open_interest)

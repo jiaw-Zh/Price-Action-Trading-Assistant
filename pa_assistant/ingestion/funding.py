@@ -199,14 +199,7 @@ class SelfAggregatedFundingProvider:
         oi_val = None
         snapshot_time = None
 
-        # 1. Try to fetch Binance funding rate (premiumIndex) - cheap endpoint
-        try:
-            funding = await self.binance.get_funding_rate(sym)
-            funding_rate = float(funding["lastFundingRate"])
-        except Exception as funding_err:
-            log.warning("binance_fetch_funding_failed_trying_fallback", error=str(funding_err))
-
-        # 2. Try Local-First for OI
+        # 1. Try Local-First for OI to completely avoid duplicate network requests
         if self.duckdb_path:
             try:
                 import duckdb
@@ -225,57 +218,64 @@ class SelfAggregatedFundingProvider:
             except Exception as db_err:
                 log.error("binance_oi_funding_db_first_failed", error=str(db_err))
 
-        # 3. If either funding_rate or oi_val is missing, try direct Binance network calls first
+        # 2. Try CoinGecko first (or direct Binance if CoinGecko key not configured, e.g. in tests)
+        if funding_rate is None or oi_val is None:
+            if self.coingecko_api_key:
+                # In production (with CoinGecko API key set):
+                # Query CoinGecko, fallback to Bybit. Never query direct Binance network.
+                try:
+                    from pa_assistant.ingestion.coingecko import CoinGeckoRestClient, parse_coingecko_binance_ticker
+                    async with CoinGeckoRestClient(
+                        base_url=self.coingecko_base_url,
+                        api_key=self.coingecko_api_key,
+                        proxy=self.proxy,
+                    ) as cg_client:
+                        ticker = await cg_client.get_binance_futures_ticker(sym)
+                        if ticker:
+                            cg_data = parse_coingecko_binance_ticker(ticker)
+                            if funding_rate is None:
+                                funding_rate = cg_data["funding_rate"]
+                                log.info("binance_funding_coingecko_primary_success", rate=funding_rate)
+                            if oi_val is None:
+                                oi_val = cg_data["open_interest_base"]
+                                snapshot_time = cg_data["timestamp"]
+                                log.info("binance_oi_coingecko_primary_success", oi=oi_val, time=snapshot_time)
+                except Exception as cg_err:
+                    log.warning("coingecko_primary_fetch_failed_trying_bybit_fallback", error=str(cg_err))
+            else:
+                # In tests (with CoinGecko API key unset):
+                # Query direct Binance REST client, fallback to Bybit.
+                try:
+                    if funding_rate is None:
+                        funding = await self.binance.get_funding_rate(sym)
+                        funding_rate = float(funding["lastFundingRate"])
+                    if oi_val is None:
+                        oi = await self.binance.get_open_interest(sym)
+                        oi_val = float(oi["openInterest"])
+                        snapshot_time = _ms_to_naive_utc(int(oi["time"]))
+                except Exception as binance_net_err:
+                    log.warning("binance_network_direct_fallback_failed", error=str(binance_net_err))
+
+        # 3. Fallback to Bybit if both CoinGecko and direct Binance failed / weren't configured
         if funding_rate is None or oi_val is None:
             try:
                 if funding_rate is None:
-                    funding = await self.binance.get_funding_rate(sym)
-                    funding_rate = float(funding["lastFundingRate"])
+                    bybit_funding = await self.bybit.get_funding_rate(sym)
+                    funding_rate = float(bybit_funding["fundingRate"])
+                    log.info("binance_funding_bybit_fallback_success", rate=funding_rate)
                 if oi_val is None:
-                    oi = await self.binance.get_open_interest(sym)
-                    oi_val = float(oi["openInterest"])
-                    snapshot_time = _ms_to_naive_utc(int(oi["time"]))
-            except Exception as binance_net_err:
-                log.warning("binance_network_direct_failed_trying_coingecko", error=str(binance_net_err))
-
-        # 4. CoinGecko Fallback: If we still lack funding_rate or oi_val, try CoinGecko!
-        if (funding_rate is None or oi_val is None) and self.coingecko_api_key:
-            try:
-                from pa_assistant.ingestion.coingecko import CoinGeckoRestClient, parse_coingecko_binance_ticker
-                async with CoinGeckoRestClient(
-                    base_url=self.coingecko_base_url,
-                    api_key=self.coingecko_api_key,
-                    proxy=self.proxy,
-                ) as cg_client:
-                    ticker = await cg_client.get_binance_futures_ticker(sym)
-                    if ticker:
-                        cg_data = parse_coingecko_binance_ticker(ticker)
-                        if funding_rate is None:
-                            funding_rate = cg_data["funding_rate"]
-                            log.info("binance_funding_coingecko_fallback_success", rate=funding_rate)
-                        if oi_val is None:
-                            oi_val = cg_data["open_interest_base"]
-                            snapshot_time = cg_data["timestamp"]
-                            log.info("binance_oi_coingecko_fallback_success", oi=oi_val, time=snapshot_time)
-            except Exception as cg_err:
-                log.error("binance_coingecko_fallback_failed", error=str(cg_err))
-
-        # 5. Last-Resort Bybit OI Fallback: If OI is still missing, use Bybit OI
-        if oi_val is None:
-            log.warning("binance_oi_still_missing_trying_bybit_oi_fallback")
-            try:
-                bybit_oi = await self.bybit.get_open_interest(sym)
-                oi_val = float(bybit_oi["openInterest"])
-                snapshot_time = _ms_to_naive_utc(int(bybit_oi["timestamp"]))
-                log.info("binance_oi_bybit_fallback_final_success", oi=oi_val)
+                    bybit_oi = await self.bybit.get_open_interest(sym)
+                    oi_val = float(bybit_oi["openInterest"])
+                    snapshot_time = _ms_to_naive_utc(int(bybit_oi["timestamp"]))
+                    log.info("binance_oi_bybit_fallback_success", oi=oi_val, time=snapshot_time)
             except Exception as bybit_err:
-                log.error("binance_oi_bybit_fallback_final_failed", error=str(bybit_err))
+                log.error("binance_bybit_fallback_failed", error=str(bybit_err))
 
         # Ensure we have all required fields before returning snapshot
         if funding_rate is None:
-            raise RuntimeError("Failed to retrieve Binance funding rate after all network and CoinGecko fallbacks.")
+            raise RuntimeError("Failed to retrieve Binance funding rate after CoinGecko, network and Bybit fallbacks.")
         if oi_val is None:
-            raise RuntimeError("Failed to retrieve Binance open interest after database, network, CoinGecko, and Bybit fallbacks.")
+            raise RuntimeError("Failed to retrieve Binance open interest after database, CoinGecko, network and Bybit fallbacks.")
 
         if snapshot_time is None:
             snapshot_time = datetime.now(UTC).replace(tzinfo=None)
