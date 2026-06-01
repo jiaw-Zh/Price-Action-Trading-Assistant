@@ -108,13 +108,13 @@ def test_parse_coingecko_binance_ticker_ok() -> None:
         "market": "Binance (Futures)",
         "symbol": "BTCUSDT",
         "price": "50000.0",
-        "funding_rate": "0.00015",
+        "funding_rate": "0.015",  # CoinGecko returns percentage: 0.015% = 0.00015 decimal
         "open_interest": "50000000.0",  # 50M USD
         "last_traded_at": 1700000000,
     }
 
     parsed = parse_coingecko_binance_ticker(raw_ticker)
-    assert parsed["funding_rate"] == 0.00015
+    assert parsed["funding_rate"] == 0.00015  # 0.015% / 100 = 0.00015
     # 50,000,000 USD / 50,000 Price = 1000 BTC open interest base
     assert parsed["open_interest_base"] == 1000.0
     assert isinstance(parsed["timestamp"], datetime)

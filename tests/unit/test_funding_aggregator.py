@@ -109,10 +109,11 @@ OKX_FUNDING = {"instId": "BTC-USDT-SWAP", "fundingRate": "0.0002"}
 OKX_OI = {"instId": "BTC-USDT-SWAP", "oiCcy": "50000", "ts": "1700000000000"}
 
 # CoinGecko Binance ticker (used to mock CoinGecko response for Binance)
+# Note: CoinGecko returns funding_rate as percentage (0.01 = 0.01%), not decimal
 COINGECKO_BINANCE_TICKER = {
     "market": "Binance (Futures)",
     "symbol": "BTCUSDT",
-    "funding_rate": 0.0001,
+    "funding_rate": 1.0,  # 1.0% = 0.01 decimal
     "open_interest": 3000000000.0,  # USD notional
     "price": 30000.0,
     "last_traded_at": 1700000000,
@@ -123,7 +124,7 @@ COINGECKO_BINANCE_TICKER = {
 COINGECKO_BYBIT_TICKER = {
     "market": "Bybit",
     "symbol": "BTCUSDT",
-    "funding_rate": -0.0001,
+    "funding_rate": -1.0,  # -1.0% = -0.01 decimal
     "open_interest": 900000000.0,  # USD notional
     "price": 30000.0,
     "last_traded_at": 1700000000,
@@ -196,15 +197,15 @@ async def test_aggregator_all_five_succeed() -> None:
     ):
         result = await provider.get_weighted_funding("BTCUSDT")
 
-    # Manual math:
-    # binance: +0.0001 * 100000 = 10
+    # Manual math (CoinGecko funding_rate is percentage, divided by 100 in parse):
+    # binance: +0.01 * 100000 = 1000
     # okx:     +0.0002 * 50000  = 10
-    # bybit:   -0.0001 * 30000  = -3
+    # bybit:   -0.01 * 30000   = -300
     # bitget:  +0.0003 * 20000  = 6
     # gateio:  +0.00015 * 10    = 0.0015
-    # numerator   = 10 + 10 - 3 + 6 + 0.0015 = 23.0015
+    # numerator   = 1000 + 10 - 300 + 6 + 0.0015 = 716.0015
     # denominator = 100000 + 50000 + 30000 + 20000 + 10 = 200010
-    expected = 23.0015 / 200010.0
+    expected = 716.0015 / 200010.0
     assert result.weighted_rate == pytest.approx(expected, rel=1e-9)
     assert result.sample_count == 5
     assert result.source == "self_aggregated"
@@ -224,9 +225,9 @@ async def test_aggregator_one_exchange_fails() -> None:
     ):
         result = await provider.get_weighted_funding("BTCUSDT")
 
-    # Without OKX: numerator = 10 - 3 + 6 + 0.0015 = 13.0015
+    # Without OKX: numerator = 1000 - 300 + 6 + 0.0015 = 706.0015
     # denominator = 100000 + 30000 + 20000 + 10 = 150010
-    expected = 13.0015 / 150010.0
+    expected = 706.0015 / 150010.0
     assert result.weighted_rate == pytest.approx(expected, rel=1e-9)
     assert result.sample_count == 4
 
@@ -339,11 +340,13 @@ async def test_components_carry_correct_per_exchange_data() -> None:
 
     by_exchange = {c.exchange: c for c in result.components}
 
-    assert by_exchange["binance"].funding_rate == pytest.approx(0.0001)
+    # Binance via CoinGecko: funding_rate 1.0% / 100 = 0.01
+    assert by_exchange["binance"].funding_rate == pytest.approx(0.01)
     assert by_exchange["binance"].open_interest_base == pytest.approx(100_000.0)
     assert by_exchange["okx"].funding_rate == pytest.approx(0.0002)
     assert by_exchange["okx"].open_interest_base == pytest.approx(50_000.0)
-    assert by_exchange["bybit"].funding_rate == pytest.approx(-0.0001)
+    # Bybit via CoinGecko: funding_rate -1.0% / 100 = -0.01
+    assert by_exchange["bybit"].funding_rate == pytest.approx(-0.01)
     assert by_exchange["bybit"].open_interest_base == pytest.approx(30_000.0)
     assert by_exchange["bitget"].funding_rate == pytest.approx(0.0003)
     assert by_exchange["bitget"].open_interest_base == pytest.approx(20_000.0)
@@ -378,7 +381,8 @@ async def test_bybit_via_coingecko_success() -> None:
 
     by_exchange = {c.exchange: c for c in result.components}
     assert "bybit" in by_exchange
-    assert by_exchange["bybit"].funding_rate == pytest.approx(-0.0001)
+    # Bybit via CoinGecko: funding_rate -1.0% / 100 = -0.01
+    assert by_exchange["bybit"].funding_rate == pytest.approx(-0.01)
     assert by_exchange["bybit"].open_interest_base == pytest.approx(30_000.0)
     await provider.aclose()
 

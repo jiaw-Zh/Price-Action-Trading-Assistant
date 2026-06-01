@@ -137,9 +137,14 @@ def parse_coingecko_ticker(
     Works for any exchange ticker (Binance, Bybit, etc.) since the CoinGecko
     derivatives response uses the same fields for all exchanges.
 
-    Converts Open Interest from USD notional to base asset units.
+    Converts:
+    - Funding rate from percentage (0.01 = 0.01%) to decimal (0.0001 = 0.01%)
+    - Open Interest from USD notional to base asset units
     """
-    funding_rate = float(ticker.get("funding_rate") or 0.0)
+    # CoinGecko returns funding_rate as a percentage value (0.01 = 0.01%)
+    # Convert to decimal (0.0001 = 0.01%) to match exchange API format
+    funding_rate_pct = float(ticker.get("funding_rate") or 0.0)
+    funding_rate = funding_rate_pct / 100.0
 
     # CoinGecko open_interest is in USD notional, we divide by price to get base asset units
     oi_usd = float(ticker.get("open_interest") or 0.0)
