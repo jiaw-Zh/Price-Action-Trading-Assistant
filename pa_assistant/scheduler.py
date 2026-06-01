@@ -44,6 +44,12 @@ from pa_assistant.notifications import (
 )
 
 
+import asyncio
+
+_fetch_lock = asyncio.Lock()
+_last_fetch_time = 0.0
+
+
 async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
     """Fetch latest data from exchanges before analysis.
 
@@ -51,97 +57,108 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
     2. Update OI snapshot
     3. Update funding rate
     """
+    global _last_fetch_time
 
     log = get_logger("scheduler.fetch")
     sym = settings.symbol.upper()
 
-    # 1. Backfill klines
-    try:
-        from pa_assistant.ingestion import BinanceRestClient, klines_to_polars
-        from pa_assistant.storage import open_db, upsert_klines_1m
+    async with _fetch_lock:
+        now = time.time()
+        # If a successful fetch occurred within the last 30 seconds, reuse cached database state.
+        if now - _last_fetch_time < 30.0:
+            log.info("fetch_skipped_due_to_recency", age_sec=now - _last_fetch_time)
+            return
 
-        end_ms = int(time.time() * 1000)
-        start_ms = end_ms - days * 86_400_000
-
-        log.info("fetch_klines_start", symbol=sym, days=days)
-
-        async with BinanceRestClient.from_settings(settings) as client:
-            with open_db(settings.duckdb_path) as db:
-                total = 0
-                async for page in client.iter_klines(
-                    sym, "1m", start_ms=start_ms, end_ms=end_ms
-                ):
-                    df = klines_to_polars(page, sym)
-                    total += upsert_klines_1m(db, df)
-
-        log.info("fetch_klines_done", symbol=sym, written=total)
-    except Exception as e:
-        log.error("fetch_klines_failed", error=str(e))
-
-    # 2. Update OI snapshot
-    try:
-        from pa_assistant.ingestion import BinanceRestClient
-        from pa_assistant.storage import insert_oi_snapshot, open_db
-
-        log.info("fetch_oi_start", symbol=sym)
-
-        async with BinanceRestClient.from_settings(settings) as client:
-            payload = await client.get_open_interest(sym)
-
-        ts_ms = int(str(payload["time"]))
-        from datetime import UTC, datetime
-
-        timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
-        open_interest = float(str(payload["openInterest"]))
-
-        with open_db(settings.duckdb_path) as db:
-            insert_oi_snapshot(db, symbol=sym, timestamp=timestamp, open_interest=open_interest)
-
-        log.info("fetch_oi_done", symbol=sym, oi=open_interest)
-    except Exception as e:
-        log.error("fetch_oi_failed", error=str(e))
-
-    # 3. Update funding rate
-    try:
-        from pa_assistant.ingestion import make_funding_provider
-        from pa_assistant.storage import insert_funding_weighted, open_db
-
-        log.info("fetch_funding_start", symbol=sym)
-
-        provider = make_funding_provider(settings)
+        # 1. Backfill klines
         try:
-            result = await provider.get_weighted_funding(sym)
-        finally:
-            await provider.aclose()
+            from pa_assistant.ingestion import BinanceRestClient, klines_to_polars
+            from pa_assistant.storage import open_db, upsert_klines_1m
 
-        raw_components = {
-            s.exchange: {
-                "funding_rate": s.funding_rate,
-                "open_interest_base": s.open_interest_base,
-                "snapshot_time": s.snapshot_time.isoformat(),
+            end_ms = int(time.time() * 1000)
+            start_ms = end_ms - days * 86_400_000
+
+            log.info("fetch_klines_start", symbol=sym, days=days)
+
+            async with BinanceRestClient.from_settings(settings) as client:
+                with open_db(settings.duckdb_path) as db:
+                    total = 0
+                    async for page in client.iter_klines(
+                        sym, "1m", start_ms=start_ms, end_ms=end_ms
+                    ):
+                        df = klines_to_polars(page, sym)
+                        total += upsert_klines_1m(db, df)
+
+            log.info("fetch_klines_done", symbol=sym, written=total)
+        except Exception as e:
+            log.error("fetch_klines_failed", error=str(e))
+
+        # 2. Update OI snapshot
+        try:
+            from pa_assistant.ingestion import BinanceRestClient
+            from pa_assistant.storage import insert_oi_snapshot, open_db
+
+            log.info("fetch_oi_start", symbol=sym)
+
+            async with BinanceRestClient.from_settings(settings) as client:
+                payload = await client.get_open_interest(sym)
+
+            ts_ms = int(str(payload["time"]))
+            from datetime import UTC, datetime
+
+            timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
+            open_interest = float(str(payload["openInterest"]))
+
+            with open_db(settings.duckdb_path) as db:
+                insert_oi_snapshot(db, symbol=sym, timestamp=timestamp, open_interest=open_interest)
+
+            log.info("fetch_oi_done", symbol=sym, oi=open_interest)
+        except Exception as e:
+            log.error("fetch_oi_failed", error=str(e))
+
+        # 3. Update funding rate
+        try:
+            from pa_assistant.ingestion import make_funding_provider
+            from pa_assistant.storage import insert_funding_weighted, open_db
+
+            log.info("fetch_funding_start", symbol=sym)
+
+            provider = make_funding_provider(settings)
+            try:
+                result = await provider.get_weighted_funding(sym)
+            finally:
+                await provider.aclose()
+
+            raw_components = {
+                s.exchange: {
+                    "funding_rate": s.funding_rate,
+                    "open_interest_base": s.open_interest_base,
+                    "snapshot_time": s.snapshot_time.isoformat(),
+                }
+                for s in result.components
             }
-            for s in result.components
-        }
 
-        with open_db(settings.duckdb_path) as db:
-            insert_funding_weighted(
-                db,
-                symbol=result.symbol,
-                timestamp=result.timestamp,
-                weighted_rate=result.weighted_rate,
+            with open_db(settings.duckdb_path) as db:
+                insert_funding_weighted(
+                    db,
+                    symbol=result.symbol,
+                    timestamp=result.timestamp,
+                    weighted_rate=result.weighted_rate,
+                    source=result.source,
+                    sample_count=result.sample_count,
+                    raw=raw_components,
+                )
+
+            log.info(
+                "fetch_funding_done",
+                symbol=sym,
+                rate=result.weighted_rate,
                 source=result.source,
-                sample_count=result.sample_count,
-                raw=raw_components,
             )
+        except Exception as e:
+            log.error("fetch_funding_failed", error=str(e))
 
-        log.info(
-            "fetch_funding_done",
-            symbol=sym,
-            rate=result.weighted_rate,
-            source=result.source,
-        )
-    except Exception as e:
-        log.error("fetch_funding_failed", error=str(e))
+        # Record successful fetch completion timestamp
+        _last_fetch_time = time.time()
 
 
 def _drop_incomplete_candle(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
@@ -495,23 +512,23 @@ def create_scheduler(language: str = "zh") -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Every hour: 1H K-line analysis
+    # Every hour: 1H K-line analysis (triggered at 5 minutes past the hour)
     scheduler.add_job(
         run_analysis_job,
-        trigger=IntervalTrigger(hours=1),
+        trigger=CronTrigger(minute=5, timezone="Asia/Shanghai"),
         kwargs={"timeframe": "1h", "htf": "4h", "language": language},
         id="hourly_analysis",
-        name="Hourly 1H Analysis",
+        name="Hourly 1H Analysis (xx:05)",
         replace_existing=True,
     )
 
-    # Every 4 hours: 4H K-line analysis
+    # Every 4 hours: 4H K-line analysis (triggered at 5 minutes past 4H close: 00:05, 04:05, 08:05, 12:05, 16:05, 20:05)
     scheduler.add_job(
         run_analysis_job,
-        trigger=IntervalTrigger(hours=4),
+        trigger=CronTrigger(hour="0,4,8,12,16,20", minute=5, timezone="Asia/Shanghai"),
         kwargs={"timeframe": "4h", "htf": "1d", "language": language},
         id="4h_analysis",
-        name="4H Analysis",
+        name="4H Analysis (00/04/08/12/16/20:05)",
         replace_existing=True,
     )
 
