@@ -397,6 +397,11 @@ LLM_API_KEY=sk-your-key
 LLM_BASE_URL=https://api.openai.com/v1  # 或 DeepSeek/其他兼容接口
 LLM_MODEL=gpt-4o
 LLM_MAX_TOKENS=2000
+
+# 可选：分周期大模型最大生成 Token 限制
+LLM_MAX_TOKENS_1H=1000
+LLM_MAX_TOKENS_4H=1500
+LLM_MAX_TOKENS_1D=3000
 ```
 
 ### 5.7 应用服务层

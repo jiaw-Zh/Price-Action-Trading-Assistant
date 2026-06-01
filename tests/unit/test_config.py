@@ -67,3 +67,17 @@ def test_unknown_env_vars_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PA_SOMETHING_RANDOM", "value")
     # Should not raise
     Settings()
+
+
+def test_llm_max_tokens_for_timeframe() -> None:
+    s = Settings(
+        llm_max_tokens=2000,
+        llm_max_tokens_1h=1000,
+        llm_max_tokens_4h=1500,
+        # llm_max_tokens_1d is left None (falls back to 2000)
+    )
+    assert s.get_llm_max_tokens_for_timeframe("1h") == 1000
+    assert s.get_llm_max_tokens_for_timeframe("4h") == 1500
+    assert s.get_llm_max_tokens_for_timeframe("1d") == 2000
+    assert s.get_llm_max_tokens_for_timeframe("15m") == 2000  # unconfigured timeframe falls back to default
+

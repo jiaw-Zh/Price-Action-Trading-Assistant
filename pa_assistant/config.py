@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o"
     llm_max_tokens: int = 2000
+    llm_max_tokens_1h: int | None = None
+    llm_max_tokens_4h: int | None = None
+    llm_max_tokens_1d: int | None = None
 
     # ---------- Telegram ----------
     telegram_bot_token: SecretStr | None = None
@@ -90,6 +93,17 @@ class Settings(BaseSettings):
     lark_webhook_url_1d: SecretStr | None = None
 
     # ----- Computed helpers -----
+
+    def get_llm_max_tokens_for_timeframe(self, timeframe: str) -> int:
+        """Get max tokens for a specific timeframe with fallback to default."""
+        tf_lower = timeframe.lower()
+        if tf_lower == "1h" and self.llm_max_tokens_1h is not None:
+            return self.llm_max_tokens_1h
+        if tf_lower == "4h" and self.llm_max_tokens_4h is not None:
+            return self.llm_max_tokens_4h
+        if tf_lower == "1d" and self.llm_max_tokens_1d is not None:
+            return self.llm_max_tokens_1d
+        return self.llm_max_tokens
 
     @property
     def timeframe_list(self) -> list[str]:

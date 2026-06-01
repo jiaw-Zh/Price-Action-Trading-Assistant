@@ -1598,7 +1598,7 @@ def ai_analyze(
         api_key=settings.llm_api_key.get_secret_value(),
         base_url=settings.llm_base_url,
         model=settings.llm_model,
-        max_tokens=settings.llm_max_tokens,
+        max_tokens=settings.get_llm_max_tokens_for_timeframe(timeframe),
     )
 
     # 3. Call LLM
