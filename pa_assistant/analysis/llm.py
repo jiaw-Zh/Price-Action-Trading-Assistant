@@ -92,8 +92,18 @@ def build_market_prompt(data: MarketData, language: str = "zh") -> str:
         lines.append("     * 价格下跌 + OI增加 + CVD减少 => 强力主动空头建仓（真跌破，看空信号强）")
         lines.append("     * 价格下跌 + OI减少 + CVD变化平缓 => 多头踩踏/爆仓割肉平仓驱动的被动流失（防范超跌反弹或假跌破）")
         lines.append("     * 价格震荡 + OI显著增加 => 主力密集对倒/建仓蓄势（防范即将到来的剧烈突破）")
+        lines.append("     * 价格上涨 + 资金费率平稳/走低 => 现货主动买盘驱动的健康上涨（极度强烈看涨信号，真突破）")
+        lines.append("     * 价格下跌 + 资金费率上升 => 散户加杠杆抄底导致的背离（极度危险，大概率诱多，容易连环爆仓）")
         lines.append("   - 结合资金费率评估市场是否过热，防范极端费率下的反向洗盘。")
         lines.append("3. **流动性磁吸与关键价位**：确认迫近的未触发流动性池（磁吸位），以及彻底推翻多空逻辑的结构性失效点（Invalidation）。")
+        
+        if data.timeframe.lower() in ["4h", "1d"]:
+            lines.append("")
+            lines.append("## 宏观周期与资金燃料定律 (4H/1D 专属)")
+            lines.append("- 请结合高周期趋势（HTF Trend）与当前级别的持仓加权资金费率进行共振研判：")
+            lines.append("  * **牛市蓄力/空头燃料 (法则 A)**：若高周期趋势为看涨且资金费率为负或极低，表明市场存在大量恐慌做空或对冲盘。在宏观上涨大背景下，这些空头持仓将成为后续向上爆发的“上涨燃料 (Short Squeeze 燃料)”。此时应当坚定寻找底部支撑或 Spring 逢低做多，而非跟随费率看空。")
+            lines.append("  * **熊市诱多/多头燃料 (法则 B)**：若高周期趋势为看跌且资金费率为正，表明大量散户正加杠杆抄底。在宏观下跌大背景下，这些多头持仓将成为价格进一步崩盘清算的“下跌燃料 (Long Liquidation 燃料)”。此时应当寻找高位阻力逢高做空，严禁任何抄底做多建议。")
+
         lines.append("")
         lines.append("## 交易策略输出规范 (必须严格遵守)")
         lines.append("- **双向情景规划**：")
@@ -120,8 +130,18 @@ def build_market_prompt(data: MarketData, language: str = "zh") -> str:
         lines.append("     * Price Down + OI Up + CVD Down => Strong active selling/short accumulation (True Bearish Breakdown).")
         lines.append("     * Price Down + OI Down => Long liquidation/washout (Vulnerable to short-squeeze bounces).")
         lines.append("     * Price Flat + OI Up => Heavy positioning/accumulation during consolidation (Anticipate high volatility breakout).")
+        lines.append("     * Price Up + Funding Rate Flat/Down => Spot-driven healthy rally (Highly bullish, true breakout).")
+        lines.append("     * Price Down + Funding Rate Up => Overleveraged retail bottom-fishing (Highly bearish divergence, long trap).")
         lines.append("   - Assess funding rate extremes to guard against contrarian washouts in overleveraged environments.")
         lines.append("3. **Liquidity Magnets & Key Levels**: Identify nearest unswept liquidity pools (magnets) and structural invalidation levels.")
+        
+        if data.timeframe.lower() in ["4h", "1d"]:
+            lines.append("")
+            lines.append("## Macro Cycle & Funding Fuel Theory (4H/1D Exclusive)")
+            lines.append("- Synthesize the HTF Trend with the global weighted funding rate:")
+            lines.append("  * **Bullish Accumulation / Short Fuel (Rule A)**: If the high-timeframe trend is bullish and the funding rate is negative/extremely low, it indicates heavy retail shorting/hedging. Under a macro uptrend, these short positions will serve as '上涨燃料 (Fuel for Short Squeeze)' to accelerate the next markup. Focus on buying the dips (e.g. Springs or support zones) rather than following the negative rate bearishly.")
+            lines.append("  * **Bearish Trap / Long Fuel (Rule B)**: If the high-timeframe trend is bearish and the funding rate is positive, it indicates overleveraged retail bottom-fishing. Under a macro downtrend, these long positions will serve as '下跌燃料 (Fuel for Long Liquidation)' to accelerate the next markdown. Focus on selling the rallies (e.g. order blocks or resistance zones) and strictly avoid any buying recommendations.")
+
         lines.append("")
         lines.append("## Trading Strategy Specifications (Strictly Enforced)")
         lines.append("- **Dual-Scenario Planning**:")
