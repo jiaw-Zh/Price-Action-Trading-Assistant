@@ -96,7 +96,7 @@ def build_market_prompt(data: MarketData, language: str = "zh") -> str:
         lines.append("     * 价格下跌 + 资金费率上升 => 散户加杠杆抄底导致的背离（极度危险，大概率诱多，容易连环爆仓）")
         lines.append("   - 结合资金费率评估市场是否过热，防范极端费率下的反向洗盘。")
         lines.append("3. **流动性磁吸与关键价位**：确认迫近的未触发流动性池（磁吸位），以及彻底推翻多空逻辑的结构性失效点（Invalidation）。")
-        
+
         if data.timeframe.lower() in ["4h", "1d"]:
             lines.append("")
             lines.append("## 宏观周期与资金燃料定律 (4H/1D 专属)")
@@ -134,7 +134,7 @@ def build_market_prompt(data: MarketData, language: str = "zh") -> str:
         lines.append("     * Price Down + Funding Rate Up => Overleveraged retail bottom-fishing (Highly bearish divergence, long trap).")
         lines.append("   - Assess funding rate extremes to guard against contrarian washouts in overleveraged environments.")
         lines.append("3. **Liquidity Magnets & Key Levels**: Identify nearest unswept liquidity pools (magnets) and structural invalidation levels.")
-        
+
         if data.timeframe.lower() in ["4h", "1d"]:
             lines.append("")
             lines.append("## Macro Cycle & Funding Fuel Theory (4H/1D Exclusive)")
@@ -297,7 +297,7 @@ async def call_llm(
         response.raise_for_status()
         data = response.json()
 
-        content = data["choices"][0]["message"]["content"]
+        content: str = data["choices"][0]["message"]["content"]
         usage = data.get("usage", {})
 
         log.info(

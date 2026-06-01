@@ -94,6 +94,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["B011"]
 "pa_assistant/analysis/llm.py" = ["RUF001"]  # Chinese characters in prompts
+"pa_assistant/cli.py" = ["RUF001"]  # Chinese characters in user-facing messages
+"pa_assistant/scheduler.py" = ["RUF001"]  # Chinese characters in alert messages
 
 [tool.ruff.format]
 quote-style = "double"
@@ -115,7 +117,7 @@ ignore_missing_imports = false
 files = ["pa_assistant", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["duckdb.*", "polars.*", "structlog.*", "tenacity.*"]
+module = ["duckdb.*", "polars.*", "structlog.*", "tenacity.*", "apscheduler.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

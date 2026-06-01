@@ -76,17 +76,16 @@ class CoinGeckoRestClient(AsyncRestClient):
                 continue
 
             # CoinGecko represents Binance Futures as "Binance (Futures)" or similar
-            if "Binance" in market and "Futures" in market:
-                # CoinGecko symbol could be "BTCUSDT" or "BTC" depending on mapping
-                # Standard derivatives ticker symbol matches "BTCUSDT" or "BTC" (with perpetual contract type)
-                if sym.upper() == target_sym or target_sym.startswith(sym.upper()):
-                    log.info(
-                        "coingecko_binance_ticker_found",
-                        market=market,
-                        symbol=sym,
-                        funding_rate=t.get("funding_rate"),
-                    )
-                    return t
+            if "Binance" in market and "Futures" in market and (
+                sym.upper() == target_sym or target_sym.startswith(sym.upper())
+            ):
+                log.info(
+                    "coingecko_binance_ticker_found",
+                    market=market,
+                    symbol=sym,
+                    funding_rate=t.get("funding_rate"),
+                )
+                return t
 
         log.warning(
             "coingecko_binance_ticker_not_found",
@@ -104,7 +103,7 @@ def parse_coingecko_binance_ticker(
     Converts Open Interest from USD notional to base asset units.
     """
     funding_rate = float(ticker.get("funding_rate") or 0.0)
-    
+
     # CoinGecko open_interest is in USD notional, we divide by price to get base asset units
     oi_usd = float(ticker.get("open_interest") or 0.0)
     price = float(ticker.get("price") or ticker.get("index") or 1.0)

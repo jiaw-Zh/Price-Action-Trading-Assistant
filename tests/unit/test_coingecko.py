@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+
 import httpx
-import pytest
 
 from pa_assistant.ingestion.coingecko import (
     CoinGeckoRestClient,

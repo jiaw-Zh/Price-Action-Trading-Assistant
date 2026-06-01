@@ -6,9 +6,10 @@ Run ``pa --help`` after installing the package (or ``uv run pa --help``).
 from __future__ import annotations
 
 import sys
+
 try:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 except Exception:
     pass
 

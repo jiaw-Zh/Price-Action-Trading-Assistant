@@ -29,6 +29,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Final, Protocol
 
 from pa_assistant.config import Settings
@@ -224,7 +225,10 @@ class SelfAggregatedFundingProvider:
                 # In production (with CoinGecko API key set):
                 # Query CoinGecko, fallback to Bybit. Never query direct Binance network.
                 try:
-                    from pa_assistant.ingestion.coingecko import CoinGeckoRestClient, parse_coingecko_binance_ticker
+                    from pa_assistant.ingestion.coingecko import (
+                        CoinGeckoRestClient,
+                        parse_coingecko_binance_ticker,
+                    )
                     async with CoinGeckoRestClient(
                         base_url=self.coingecko_base_url,
                         api_key=self.coingecko_api_key,

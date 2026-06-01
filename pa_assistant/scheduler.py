@@ -15,12 +15,14 @@ Each job:
 
 from __future__ import annotations
 
+import asyncio
 import time
+from datetime import UTC, datetime, timedelta
 
 import duckdb
+import polars as pl
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 
 from pa_assistant.analysis import (
     analyze_wyckoff,
@@ -42,9 +44,6 @@ from pa_assistant.notifications import (
     configured_channels,
     send_to_all,
 )
-
-
-import asyncio
 
 _fetch_lock = asyncio.Lock()
 _last_fetch_time = 0.0
@@ -103,7 +102,6 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
         # 2. Update OI snapshot
         try:
             from pa_assistant.storage import insert_oi_snapshot, open_db
-            from datetime import UTC, datetime
 
             log.info("fetch_oi_start", symbol=sym)
 
@@ -113,7 +111,10 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
             # 1. Try CoinGecko first to avoid WAF blocks and geo-blocks
             if settings.coingecko_api_key:
                 try:
-                    from pa_assistant.ingestion.coingecko import CoinGeckoRestClient, parse_coingecko_binance_ticker
+                    from pa_assistant.ingestion.coingecko import (
+                        CoinGeckoRestClient,
+                        parse_coingecko_binance_ticker,
+                    )
                     cg_key = settings.coingecko_api_key.get_secret_value()
                     async with CoinGeckoRestClient(
                         base_url=settings.coingecko_base_url,
@@ -160,6 +161,7 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
             if open_interest is None:
                 raise RuntimeError("Failed to retrieve open interest after all fallbacks.")
 
+            assert timestamp is not None
             with open_db(settings.duckdb_path) as db:
                 insert_oi_snapshot(db, symbol=sym, timestamp=timestamp, open_interest=open_interest)
 
@@ -218,9 +220,6 @@ def _drop_incomplete_candle(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     if df.is_empty():
         return df
 
-    from datetime import UTC, datetime, timedelta
-    import polars as pl
-
     # Parse timeframe duration
     unit = timeframe[-1].lower()
     try:
@@ -241,14 +240,14 @@ def _drop_incomplete_candle(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
 
     last_row = df.row(df.height - 1, named=True)
     last_ts = last_row["open_time"]
-    
+
     # Get current naive UTC time
     now_utc = datetime.now(UTC).replace(tzinfo=None)
-    
+
     if now_utc < last_ts + delta:
         # Drop the last row as it is still incomplete
         return df.head(df.height - 1)
-        
+
     return df
 
 
@@ -257,7 +256,6 @@ def check_data_freshness(timestamp: datetime, timeframe: str) -> tuple[bool, flo
 
     Returns (is_stale, gap_minutes).
     """
-    from datetime import datetime, UTC
     now_utc = datetime.now(UTC).replace(tzinfo=None)
     gap = now_utc - timestamp
     gap_min = gap.total_seconds() / 60.0
@@ -287,7 +285,6 @@ def collect_market_data(
 ) -> MarketData:
     """Collect market data from DuckDB for LLM analysis."""
 
-    import polars as pl
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
@@ -583,7 +580,7 @@ async def run_analysis_job(
 
         # 4. Push to configured channels (with timeframe-specific Lark bot overrides)
         channels = configured_channels(settings)
-        
+
         specific_webhook = None
         tf_lower = timeframe.lower()
         if tf_lower == "1h" and settings.lark_webhook_url_1h:

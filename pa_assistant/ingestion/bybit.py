@@ -11,7 +11,10 @@ Bybit wraps every response in ``{"retCode": 0, "retMsg": "OK",
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Final
+
+import polars as pl
 
 from pa_assistant.ingestion._http import AsyncRestClient
 from pa_assistant.logging import get_logger
@@ -117,10 +120,6 @@ class BybitRestClient(AsyncRestClient):
 
         result = await self._get_unwrapped("/v5/market/kline", **params)
         return result.get("list") or []
-
-
-import polars as pl
-from datetime import UTC, datetime
 
 
 def bybit_klines_to_polars(rows: list[list[Any]], symbol: str) -> pl.DataFrame:
