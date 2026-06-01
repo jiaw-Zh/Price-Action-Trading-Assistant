@@ -144,12 +144,53 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
         log.error("fetch_funding_failed", error=str(e))
 
 
+def _drop_incomplete_candle(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
+    """Drop the last row if it represents an incomplete candle based on current UTC time."""
+    if df.is_empty():
+        return df
+
+    from datetime import UTC, datetime, timedelta
+    import polars as pl
+
+    # Parse timeframe duration
+    unit = timeframe[-1].lower()
+    try:
+        val = int(timeframe[:-1])
+    except ValueError:
+        return df
+
+    if unit == "m":
+        delta = timedelta(minutes=val)
+    elif unit == "h":
+        delta = timedelta(hours=val)
+    elif unit == "d":
+        delta = timedelta(days=val)
+    elif unit == "w":
+        delta = timedelta(weeks=val)
+    else:
+        return df
+
+    last_row = df.row(df.height - 1, named=True)
+    last_ts = last_row["open_time"]
+    
+    # Get current naive UTC time
+    now_utc = datetime.now(UTC).replace(tzinfo=None)
+    
+    if now_utc < last_ts + delta:
+        # Drop the last row as it is still incomplete
+        return df.head(df.height - 1)
+        
+    return df
+
+
 def collect_market_data(
     settings: Settings,
     timeframe: str,
     htf: str | None = None,
 ) -> MarketData:
     """Collect market data from DuckDB for LLM analysis."""
+
+    import polars as pl
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
@@ -177,6 +218,7 @@ def collect_market_data(
 
     # Resample
     working = resample_ohlcv(klines, timeframe)
+    working = _drop_incomplete_candle(working, timeframe)
     working = compute_delta(working)
 
     if not oi_df.is_empty():
