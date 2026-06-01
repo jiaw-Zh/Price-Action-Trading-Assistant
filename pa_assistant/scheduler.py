@@ -77,36 +77,50 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
             end_ms = int(time.time() * 1000)
             start_ms = end_ms - days * 86_400_000
 
-            log.info("fetch_klines_start", symbol=sym, days=days)
-
-            async with BinanceRestClient.from_settings(settings) as client:
-                with open_db(settings.duckdb_path) as db:
-                    total = 0
-                    async for page in client.iter_klines(
-                        sym, "1m", start_ms=start_ms, end_ms=end_ms
-                    ):
-                        df = klines_to_polars(page, sym)
-                        total += upsert_klines_1m(db, df)
-
-            log.info("fetch_klines_done", symbol=sym, written=total)
+            try:
+                async with BinanceRestClient.from_settings(settings) as client:
+                    with open_db(settings.duckdb_path) as db:
+                        total = 0
+                        async for page in client.iter_klines(
+                            sym, "1m", start_ms=start_ms, end_ms=end_ms
+                        ):
+                            df = klines_to_polars(page, sym)
+                            total += upsert_klines_1m(db, df)
+                log.info("fetch_klines_done", symbol=sym, written=total)
+            except Exception as binance_err:
+                log.warning("binance_fetch_klines_failed_trying_bybit_fallback", error=str(binance_err))
+                from pa_assistant.ingestion.bybit import BybitRestClient, bybit_klines_to_polars
+                async with BybitRestClient(proxy=settings.http_proxy_url) as client:
+                    page = await client.get_klines(sym, "1m", start_ms=start_ms, end_ms=end_ms)
+                    df = bybit_klines_to_polars(page, sym)
+                    with open_db(settings.duckdb_path) as db:
+                        total = upsert_klines_1m(db, df)
+                log.info("fetch_klines_bybit_fallback_done", symbol=sym, written=total)
         except Exception as e:
             log.error("fetch_klines_failed", error=str(e))
 
         # 2. Update OI snapshot
         try:
-            from pa_assistant.ingestion import BinanceRestClient
             from pa_assistant.storage import insert_oi_snapshot, open_db
+            from datetime import UTC, datetime
 
             log.info("fetch_oi_start", symbol=sym)
 
-            async with BinanceRestClient.from_settings(settings) as client:
-                payload = await client.get_open_interest(sym)
-
-            ts_ms = int(str(payload["time"]))
-            from datetime import UTC, datetime
-
-            timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
-            open_interest = float(str(payload["openInterest"]))
+            try:
+                from pa_assistant.ingestion import BinanceRestClient
+                async with BinanceRestClient.from_settings(settings) as client:
+                    payload = await client.get_open_interest(sym)
+                ts_ms = int(str(payload["time"]))
+                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
+                open_interest = float(str(payload["openInterest"]))
+            except Exception as binance_err:
+                log.warning("binance_fetch_oi_failed_trying_bybit_fallback", error=str(binance_err))
+                from pa_assistant.ingestion.bybit import BybitRestClient
+                async with BybitRestClient(proxy=settings.http_proxy_url) as client:
+                    payload = await client.get_open_interest(sym)
+                ts_ms = int(str(payload.get("timestamp", time.time() * 1000)))
+                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
+                open_interest = float(str(payload.get("openInterest", 0.0)))
 
             with open_db(settings.duckdb_path) as db:
                 insert_oi_snapshot(db, symbol=sym, timestamp=timestamp, open_interest=open_interest)

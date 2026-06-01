@@ -77,3 +77,104 @@ class BybitRestClient(AsyncRestClient):
         if not isinstance(first, dict):
             raise RuntimeError(f"Bybit: malformed OI entry: {first!r}")
         return first
+
+    async def get_klines(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[list[Any]]:
+        """Fetch K-lines from Bybit V5 (linear perpetual)."""
+        bybit_interval = interval
+        if interval == "1m":
+            bybit_interval = "1"
+        elif interval == "5m":
+            bybit_interval = "5"
+        elif interval == "15m":
+            bybit_interval = "15"
+        elif interval == "30m":
+            bybit_interval = "30"
+        elif interval == "1h":
+            bybit_interval = "60"
+        elif interval == "4h":
+            bybit_interval = "240"
+        elif interval == "1d":
+            bybit_interval = "D"
+
+        params: dict[str, Any] = {
+            "category": "linear",
+            "symbol": symbol.upper(),
+            "interval": bybit_interval,
+            "limit": min(max(limit, 1), 1000),
+        }
+        if start_ms is not None:
+            params["start"] = start_ms
+        if end_ms is not None:
+            params["end"] = end_ms
+
+        result = await self._get_unwrapped("/v5/market/kline", **params)
+        return result.get("list") or []
+
+
+import polars as pl
+from datetime import UTC, datetime
+
+
+def bybit_klines_to_polars(rows: list[list[Any]], symbol: str) -> pl.DataFrame:
+    """Convert Bybit raw klines to Polars DataFrame matching canonical kline_1m."""
+    if not rows:
+        from pa_assistant.ingestion.binance import _empty_klines_df
+        return _empty_klines_df()
+
+    sym = symbol.upper()
+    # Bybit raw list: [startTime, open, high, low, close, volume, turnover]
+    open_times = [datetime.fromtimestamp(int(r[0]) / 1000, tz=UTC).replace(tzinfo=None) for r in rows]
+    close_times = [datetime.fromtimestamp((int(r[0]) + 59999) / 1000, tz=UTC).replace(tzinfo=None) for r in rows]
+
+    opens = [float(r[1]) for r in rows]
+    highs = [float(r[2]) for r in rows]
+    lows = [float(r[3]) for r in rows]
+    closes = [float(r[4]) for r in rows]
+    volumes = [float(r[5]) for r in rows]
+    quote_volumes = [float(r[6]) for r in rows]
+
+    # Bybit does not provide taker buy volumes in standard candles, use volume/2 as neutral default
+    taker_buy_base = [v / 2.0 for v in volumes]
+    taker_buy_quote = [qv / 2.0 for qv in quote_volumes]
+
+    return pl.DataFrame(
+        {
+            "open_time": open_times,
+            "close_time": close_times,
+            "symbol": [sym] * len(rows),
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": volumes,
+            "quote_volume": quote_volumes,
+            "trade_count": [0] * len(rows),
+            "taker_buy_base": taker_buy_base,
+            "taker_buy_quote": taker_buy_quote,
+            "is_closed": [True] * len(rows),
+        },
+        schema={
+            "open_time": pl.Datetime("us"),
+            "close_time": pl.Datetime("us"),
+            "symbol": pl.Utf8,
+            "open": pl.Float64,
+            "high": pl.Float64,
+            "low": pl.Float64,
+            "close": pl.Float64,
+            "volume": pl.Float64,
+            "quote_volume": pl.Float64,
+            "trade_count": pl.Int64,
+            "taker_buy_base": pl.Float64,
+            "taker_buy_quote": pl.Float64,
+            "is_closed": pl.Boolean,
+        },
+    )
+
