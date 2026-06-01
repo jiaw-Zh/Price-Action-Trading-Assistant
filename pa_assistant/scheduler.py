@@ -523,6 +523,7 @@ async def run_analysis_job(
             base_url=settings.llm_base_url,
             model=settings.llm_model,
             max_tokens=settings.get_llm_max_tokens_for_timeframe(timeframe),
+            timeout=settings.llm_timeout,
         )
 
         report = await analyze_with_llm(

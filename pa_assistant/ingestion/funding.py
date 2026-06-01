@@ -84,7 +84,12 @@ class FundingProvider(Protocol):
     async def aclose(self) -> None: ...
 
 
+def _ms_to_naive_utc(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).replace(tzinfo=None)
+
+
 # ---------------------------------------------------------------------------
+
 # Symbol mapping (canonical → per-exchange instrument id)
 # ---------------------------------------------------------------------------
 
@@ -118,13 +123,10 @@ def _resolve_symbols(symbol: str) -> dict[str, str]:
     return mapping
 
 
+
 # ---------------------------------------------------------------------------
 # Self-aggregated implementation
 # ---------------------------------------------------------------------------
-
-
-def _ms_to_naive_utc(ms: int) -> datetime:
-    return datetime.fromtimestamp(ms / 1000, tz=UTC).replace(tzinfo=None)
 
 
 class SelfAggregatedFundingProvider:
@@ -144,12 +146,14 @@ class SelfAggregatedFundingProvider:
         bybit: BybitRestClient,
         bitget: BitgetRestClient,
         gateio: GateioRestClient,
+        duckdb_path: Path | None = None,
     ) -> None:
         self.binance = binance
         self.okx = okx
         self.bybit = bybit
         self.bitget = bitget
         self.gateio = gateio
+        self.duckdb_path = duckdb_path
 
     @classmethod
     def from_settings(cls, settings: Settings) -> SelfAggregatedFundingProvider:
@@ -160,6 +164,7 @@ class SelfAggregatedFundingProvider:
             bybit=BybitRestClient(proxy=proxy),
             bitget=BitgetRestClient(proxy=proxy),
             gateio=GateioRestClient(proxy=proxy),
+            duckdb_path=settings.duckdb_path,
         )
 
     async def aclose(self) -> None:
@@ -175,15 +180,61 @@ class SelfAggregatedFundingProvider:
     # ----- Per-exchange snapshot fetchers -----
 
     async def _fetch_binance(self, sym: str) -> ExchangeFundingSnapshot:
-        funding, oi = await asyncio.gather(
-            self.binance.get_funding_rate(sym),
-            self.binance.get_open_interest(sym),
-        )
+        # Fetch funding rate (premiumIndex)
+        try:
+            funding = await self.binance.get_funding_rate(sym)
+            funding_rate = float(funding["lastFundingRate"])
+        except Exception as e:
+            # If funding rate fails, raise to try fallback or drop
+            raise e
+
+        # Fetch open interest
+        oi_val = None
+        snapshot_time = None
+        try:
+            oi = await self.binance.get_open_interest(sym)
+            oi_val = float(oi["openInterest"])
+            snapshot_time = _ms_to_naive_utc(int(oi["time"]))
+        except Exception as oi_err:
+            log.warning("binance_fetch_oi_funding_failed_trying_db_fallback", error=str(oi_err))
+            if self.duckdb_path:
+                try:
+                    import duckdb
+                    conn = duckdb.connect(str(self.duckdb_path), read_only=True)
+                    try:
+                        row = conn.execute(
+                            "SELECT open_interest, timestamp FROM oi_1m WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+                            [sym.upper()],
+                        ).fetchone()
+                        if row:
+                            oi_val = float(row[0])
+                            snapshot_time = row[1]
+                            log.info("binance_oi_funding_db_fallback_success", oi=oi_val, time=snapshot_time)
+                    finally:
+                        conn.close()
+                except Exception as db_err:
+                    log.error("binance_oi_funding_db_fallback_failed", error=str(db_err))
+
+            # If DB fallback also failed or has no data, fall back to Bybit OI!
+            if oi_val is None:
+                log.warning("binance_oi_funding_db_fallback_empty_trying_bybit_oi_fallback")
+                try:
+                    bybit_oi = await self.bybit.get_open_interest(sym)
+                    oi_val = float(bybit_oi["openInterest"])
+                    snapshot_time = _ms_to_naive_utc(int(bybit_oi["timestamp"]))
+                    log.info("binance_oi_funding_bybit_oi_fallback_success", oi=oi_val)
+                except Exception as bybit_err:
+                    log.error("binance_oi_funding_bybit_oi_fallback_failed", error=str(bybit_err))
+                    raise oi_err  # Re-raise original error if all fallbacks fail
+
+        if snapshot_time is None:
+            snapshot_time = datetime.now(UTC).replace(tzinfo=None)
+
         return ExchangeFundingSnapshot(
             exchange="binance",
-            funding_rate=float(funding["lastFundingRate"]),
-            open_interest_base=float(oi["openInterest"]),
-            snapshot_time=_ms_to_naive_utc(int(oi["time"])),
+            funding_rate=funding_rate,
+            open_interest_base=oi_val,
+            snapshot_time=snapshot_time,
         )
 
     async def _fetch_okx(self, inst_id: str) -> ExchangeFundingSnapshot:

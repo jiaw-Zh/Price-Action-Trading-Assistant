@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     llm_max_tokens_1h: int | None = None
     llm_max_tokens_4h: int | None = None
     llm_max_tokens_1d: int | None = None
+    llm_timeout: float = 180.0
+
 
     # ---------- Telegram ----------
     telegram_bot_token: SecretStr | None = None
