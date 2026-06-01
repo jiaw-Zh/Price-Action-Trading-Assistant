@@ -1593,6 +1593,82 @@ def ai_analyze(
         typer.secho(str(e), fg=typer.colors.RED)
         raise typer.Exit(code=1) from e
 
+    # 1.1 数据新鲜度安全校验 (Freshness Check & Emergency Push)
+    from pa_assistant.scheduler import check_data_freshness
+    is_stale, gap_min = check_data_freshness(market_data.timestamp, timeframe)
+    if is_stale:
+        typer.echo("")
+        typer.secho(
+            f" ❌  【实盘安全警报】当前最新 K 线数据时间为 {market_data.timestamp:%Y-%m-%d %H:%M UTC}，"
+            f"已严重滞后当前时间 {gap_min:.1f} 分钟！",
+            fg=typer.colors.RED,
+            bold=True,
+        )
+        typer.secho(
+            "     实盘数据新鲜度安全拦截已激活。为了避免根据陈旧数据做出错误交易判断，本次分析已终止，不调用大模型！",
+            fg=typer.colors.YELLOW,
+        )
+
+        # Build warning message
+        tf_label = timeframe.upper()
+        title = f"⚠️ [系统警报] {sym} {tf_label} 数据同步失效"
+        body = (
+            f"### ⚠️ 系统运行警报：实时数据同步失效\n\n"
+            f"**标的**: {sym} | **周期**: {tf_label}\n\n"
+            f"**检测状态**: 🔴 数据滞后严重，实盘安全拦截已触发\n"
+            f"**本地最新K线时间**: `{market_data.timestamp:%Y-%m-%d %H:%M UTC}`\n"
+            f"**已滞后时长**: `{gap_min:.1f} 分钟`\n\n"
+            f"---\n\n"
+            f"**【风控提示】**\n"
+            f"为防止以“过期/非实时数据”做出错误的交易决策，系统已**自动拦截并取消了本次 AI 研判流程**（未调用大模型）。\n\n"
+            f"**【紧急排查建议】**\n"
+            f"1. 币安（Binance）与备用（Bybit）K 线与持仓量接口拉取均失败，请检查服务器网络与代理配置。\n"
+            f"2. 请检查 `.env` 中的 `HTTP_PROXY_URL` 是否失效，或更换为其他可用代理 IP。\n"
+            f"3. 检查交易所 API 是否有临时维护公告。"
+        )
+        message = NotificationMessage(title=title, body=body, format="markdown")
+
+        if dry_run:
+            typer.echo("")
+            typer.secho("[dry-run] would send alert push:", fg=typer.colors.YELLOW, bold=True)
+            typer.echo(f"Title: {message.title}")
+            typer.echo(message.body)
+            raise typer.Exit(code=3)
+
+        # Dispatch to channels (with timeframe-specific Lark overrides)
+        channels = configured_channels(settings)
+        tf_lower = timeframe.lower()
+        specific_webhook = None
+        if tf_lower == "1h" and settings.lark_webhook_url_1h:
+            specific_webhook = settings.lark_webhook_url_1h.get_secret_value()
+        elif tf_lower == "4h" and settings.lark_webhook_url_4h:
+            specific_webhook = settings.lark_webhook_url_4h.get_secret_value()
+        elif tf_lower == "1d" and settings.lark_webhook_url_1d:
+            specific_webhook = settings.lark_webhook_url_1d.get_secret_value()
+
+        if specific_webhook:
+            channels = [c for c in channels if c.name != "lark"]
+            from pa_assistant.notifications.lark import LarkChannel
+            signing_secret = (
+                settings.lark_signing_secret.get_secret_value()
+                if settings.lark_signing_secret
+                else None
+            )
+            channels.append(
+                LarkChannel(
+                    webhook_url=specific_webhook,
+                    signing_secret=signing_secret,
+                    proxy_url=settings.http_proxy_url,
+                )
+            )
+
+        if channels:
+            typer.echo("正在发送紧急数据失效警报推送...")
+            asyncio.run(send_to_all(channels, message))
+            typer.secho("  ✓ 警报推送发送完成", fg=typer.colors.RED)
+
+        raise typer.Exit(code=3)
+
     # 2. Check LLM config
     if not settings.llm_api_key:
         typer.secho(

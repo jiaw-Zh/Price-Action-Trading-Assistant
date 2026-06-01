@@ -214,6 +214,34 @@ def _drop_incomplete_candle(df: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     return df
 
 
+def check_data_freshness(timestamp: datetime, timeframe: str) -> tuple[bool, float]:
+    """Check if the latest data timestamp is stale compared to current time.
+
+    Returns (is_stale, gap_minutes).
+    """
+    from datetime import datetime, UTC
+    now_utc = datetime.now(UTC).replace(tzinfo=None)
+    gap = now_utc - timestamp
+    gap_min = gap.total_seconds() / 60.0
+
+    unit = timeframe[-1].lower()
+    try:
+        val = int(timeframe[:-1])
+    except ValueError:
+        val = 1
+
+    if unit == "m":
+        threshold_min = max(15.0, val * 2.0)
+    elif unit == "h":
+        threshold_min = max(60.0, val * 60.0 * 1.5)
+    elif unit == "d":
+        threshold_min = val * 24.0 * 60.0 * 1.5
+    else:
+        threshold_min = 60.0
+
+    return gap_min > threshold_min, gap_min
+
+
 def collect_market_data(
     settings: Settings,
     timeframe: str,
@@ -432,6 +460,58 @@ async def run_analysis_job(
 
         # 1. Collect market data
         market_data = collect_market_data(settings, timeframe, htf=htf)
+
+        # 1.1 Freshness check & emergency fallback
+        is_stale, gap_min = check_data_freshness(market_data.timestamp, timeframe)
+        if is_stale:
+            log.warning("data_stale_triggering_emergency_push", gap_min=gap_min, timeframe=timeframe)
+            title = f"⚠️ [系统警报] {settings.symbol} {timeframe.upper()} 数据同步失效"
+            body = (
+                f"### ⚠️ 系统运行警报：实时数据同步失效\n\n"
+                f"**标的**: {settings.symbol} | **周期**: {timeframe.upper()}\n\n"
+                f"**检测状态**: 🔴 数据滞后严重，实盘安全拦截已触发\n"
+                f"**本地最新K线时间**: `{market_data.timestamp:%Y-%m-%d %H:%M UTC}`\n"
+                f"**已滞后时长**: `{gap_min:.1f} 分钟`\n\n"
+                f"---\n\n"
+                f"**【风控提示】**\n"
+                f"为防止以“过期/非实时数据”做出错误的交易决策，系统已**自动拦截并取消了本次 AI 研判流程**（未调用大模型）。\n\n"
+                f"**【紧急排查建议】**\n"
+                f"1. 币安（Binance）与备用（Bybit）K 线与持仓量接口拉取均失败，请检查服务器网络与代理配置。\n"
+                f"2. 请检查 `.env` 中的 `HTTP_PROXY_URL` 是否失效，或更换为其他可用代理 IP。\n"
+                f"3. 检查交易所 API 是否有临时维护公告。"
+            )
+            message = NotificationMessage(title=title, body=body, format="markdown")
+            channels = configured_channels(settings)
+
+            # Apply Lark specific routing override if configured
+            tf_lower = timeframe.lower()
+            specific_webhook = None
+            if tf_lower == "1h" and settings.lark_webhook_url_1h:
+                specific_webhook = settings.lark_webhook_url_1h.get_secret_value()
+            elif tf_lower == "4h" and settings.lark_webhook_url_4h:
+                specific_webhook = settings.lark_webhook_url_4h.get_secret_value()
+            elif tf_lower == "1d" and settings.lark_webhook_url_1d:
+                specific_webhook = settings.lark_webhook_url_1d.get_secret_value()
+
+            if specific_webhook:
+                channels = [c for c in channels if c.name != "lark"]
+                from pa_assistant.notifications.lark import LarkChannel
+                signing_secret = (
+                    settings.lark_signing_secret.get_secret_value()
+                    if settings.lark_signing_secret
+                    else None
+                )
+                channels.append(
+                    LarkChannel(
+                        webhook_url=specific_webhook,
+                        signing_secret=signing_secret,
+                        proxy_url=settings.http_proxy_url,
+                    )
+                )
+
+            if channels:
+                await send_to_all(channels, message)
+            return
 
         # 2. Call LLM
         if not settings.llm_api_key:
