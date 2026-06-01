@@ -115,12 +115,37 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
                 open_interest = float(str(payload["openInterest"]))
             except Exception as binance_err:
                 log.warning("binance_fetch_oi_failed_trying_bybit_fallback", error=str(binance_err))
-                from pa_assistant.ingestion.bybit import BybitRestClient
-                async with BybitRestClient(proxy=settings.http_proxy_url) as client:
-                    payload = await client.get_open_interest(sym)
-                ts_ms = int(str(payload.get("timestamp", time.time() * 1000)))
-                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
-                open_interest = float(str(payload.get("openInterest", 0.0)))
+                try:
+                    from pa_assistant.ingestion.bybit import BybitRestClient
+                    async with BybitRestClient(proxy=settings.http_proxy_url) as client:
+                        payload = await client.get_open_interest(sym)
+                    ts_ms = int(str(payload.get("timestamp", time.time() * 1000)))
+                    timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).replace(tzinfo=None)
+                    open_interest = float(str(payload.get("openInterest", 0.0)))
+                except Exception as bybit_err:
+                    log.warning("bybit_fetch_oi_failed_trying_coingecko_fallback", error=str(bybit_err))
+                    if settings.coingecko_api_key:
+                        try:
+                            from pa_assistant.ingestion.coingecko import CoinGeckoRestClient, parse_coingecko_binance_ticker
+                            cg_key = settings.coingecko_api_key.get_secret_value()
+                            async with CoinGeckoRestClient(
+                                base_url=settings.coingecko_base_url,
+                                api_key=cg_key,
+                                proxy=settings.http_proxy_url,
+                            ) as cg_client:
+                                ticker = await cg_client.get_binance_futures_ticker(sym)
+                                if ticker:
+                                    cg_data = parse_coingecko_binance_ticker(ticker)
+                                    open_interest = cg_data["open_interest_base"]
+                                    timestamp = cg_data["timestamp"]
+                                    log.info("binance_oi_coingecko_fallback_success", oi=open_interest, time=timestamp)
+                                else:
+                                    raise ValueError("Binance ticker not found on CoinGecko")
+                        except Exception as cg_err:
+                            log.error("coingecko_oi_fallback_failed", error=str(cg_err))
+                            raise bybit_err
+                    else:
+                        raise bybit_err
 
             with open_db(settings.duckdb_path) as db:
                 insert_oi_snapshot(db, symbol=sym, timestamp=timestamp, open_interest=open_interest)

@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # ---------- Coinglass ----------
     coinglass_api_key: SecretStr | None = None
 
+    # ---------- CoinGecko ----------
+    coingecko_api_key: SecretStr | None = None
+    coingecko_base_url: str = "https://api.coingecko.com/api/v3"
+
     # ---------- LLM ----------
     llm_api_key: SecretStr | None = None
     llm_base_url: str = "https://api.openai.com/v1"
