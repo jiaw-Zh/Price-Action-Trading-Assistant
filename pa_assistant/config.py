@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     # ---------- Lark / Feishu (飞书) ----------
     lark_webhook_url: SecretStr | None = None
     lark_signing_secret: SecretStr | None = None  # optional: for HMAC-signed webhooks
+    lark_webhook_url_1h: SecretStr | None = None
+    lark_webhook_url_4h: SecretStr | None = None
+    lark_webhook_url_1d: SecretStr | None = None
 
     # ----- Computed helpers -----
 

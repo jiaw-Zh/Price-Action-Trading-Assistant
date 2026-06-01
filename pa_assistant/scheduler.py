@@ -431,8 +431,36 @@ async def run_analysis_job(
             format="markdown",
         )
 
-        # 4. Push to configured channels
+        # 4. Push to configured channels (with timeframe-specific Lark bot overrides)
         channels = configured_channels(settings)
+        
+        specific_webhook = None
+        tf_lower = timeframe.lower()
+        if tf_lower == "1h" and settings.lark_webhook_url_1h:
+            specific_webhook = settings.lark_webhook_url_1h.get_secret_value()
+        elif tf_lower == "4h" and settings.lark_webhook_url_4h:
+            specific_webhook = settings.lark_webhook_url_4h.get_secret_value()
+        elif tf_lower == "1d" and settings.lark_webhook_url_1d:
+            specific_webhook = settings.lark_webhook_url_1d.get_secret_value()
+
+        if specific_webhook:
+            # Remove global Lark channel if present
+            channels = [c for c in channels if c.name != "lark"]
+            # Append timeframe-specific Lark channel
+            from pa_assistant.notifications.lark import LarkChannel
+            signing_secret = (
+                settings.lark_signing_secret.get_secret_value()
+                if settings.lark_signing_secret
+                else None
+            )
+            channels.append(
+                LarkChannel(
+                    webhook_url=specific_webhook,
+                    signing_secret=signing_secret,
+                    proxy_url=settings.http_proxy_url,
+                )
+            )
+
         if not channels:
             log.warning("no_notification_channels_configured")
             return
