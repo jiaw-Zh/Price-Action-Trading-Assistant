@@ -71,14 +71,6 @@ async def fetch_latest_data(settings: Settings, days: int = 1) -> None:
 
         # 1. Backfill klines
         try:
-            from pa_assistant.ingestion import BinanceRestClient, klines_to_polars
-            from pa_assistant.storage import open_db, upsert_klines_1m
-
-            end_ms = int(time.time() * 1000)
-            start_ms = end_ms - days * 86_400_000
-
-        # 1. Backfill klines
-        try:
             from pa_assistant.storage import open_db, upsert_klines_1m
 
             end_ms = int(time.time() * 1000)
