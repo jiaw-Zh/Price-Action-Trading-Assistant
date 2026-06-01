@@ -231,11 +231,11 @@ def check_data_freshness(timestamp: datetime, timeframe: str) -> tuple[bool, flo
         val = 1
 
     if unit == "m":
-        threshold_min = max(15.0, val * 2.0)
+        threshold_min = max(15.0, val * 2.0 + 15.0)
     elif unit == "h":
-        threshold_min = max(60.0, val * 60.0 * 1.5)
+        threshold_min = val * 2.0 * 60.0 + 30.0
     elif unit == "d":
-        threshold_min = val * 24.0 * 60.0 * 1.5
+        threshold_min = val * 2.0 * 24.0 * 60.0 + 60.0
     else:
         threshold_min = 60.0
 
