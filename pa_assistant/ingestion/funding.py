@@ -188,36 +188,36 @@ class SelfAggregatedFundingProvider:
             # If funding rate fails, raise to try fallback or drop
             raise e
 
-        # Fetch open interest
+        # Local-First approach for Binance OI: Try DB first to completely avoid duplicate network requests
         oi_val = None
         snapshot_time = None
-        try:
-            oi = await self.binance.get_open_interest(sym)
-            oi_val = float(oi["openInterest"])
-            snapshot_time = _ms_to_naive_utc(int(oi["time"]))
-        except Exception as oi_err:
-            log.warning("binance_fetch_oi_funding_failed_trying_db_fallback", error=str(oi_err))
-            if self.duckdb_path:
+        if self.duckdb_path:
+            try:
+                import duckdb
+                conn = duckdb.connect(str(self.duckdb_path), read_only=True)
                 try:
-                    import duckdb
-                    conn = duckdb.connect(str(self.duckdb_path), read_only=True)
-                    try:
-                        row = conn.execute(
-                            "SELECT open_interest, timestamp FROM oi_1m WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
-                            [sym.upper()],
-                        ).fetchone()
-                        if row:
-                            oi_val = float(row[0])
-                            snapshot_time = row[1]
-                            log.info("binance_oi_funding_db_fallback_success", oi=oi_val, time=snapshot_time)
-                    finally:
-                        conn.close()
-                except Exception as db_err:
-                    log.error("binance_oi_funding_db_fallback_failed", error=str(db_err))
+                    row = conn.execute(
+                        "SELECT open_interest, timestamp FROM oi_1m WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+                        [sym.upper()],
+                    ).fetchone()
+                    if row:
+                        oi_val = float(row[0])
+                        snapshot_time = row[1]
+                        log.info("binance_oi_funding_db_first_success", oi=oi_val, time=snapshot_time)
+                finally:
+                    conn.close()
+            except Exception as db_err:
+                log.error("binance_oi_funding_db_first_failed", error=str(db_err))
 
-            # If DB fallback also failed or has no data, fall back to Bybit OI!
-            if oi_val is None:
-                log.warning("binance_oi_funding_db_fallback_empty_trying_bybit_oi_fallback")
+        # Only call the network if it's not found in the DB (e.g., in some test environments)
+        if oi_val is None:
+            log.warning("binance_oi_not_found_in_db_calling_network_fallback")
+            try:
+                oi = await self.binance.get_open_interest(sym)
+                oi_val = float(oi["openInterest"])
+                snapshot_time = _ms_to_naive_utc(int(oi["time"]))
+            except Exception as oi_err:
+                log.warning("binance_network_oi_failed_trying_bybit_oi_fallback", error=str(oi_err))
                 try:
                     bybit_oi = await self.bybit.get_open_interest(sym)
                     oi_val = float(bybit_oi["openInterest"])
@@ -236,6 +236,7 @@ class SelfAggregatedFundingProvider:
             open_interest_base=oi_val,
             snapshot_time=snapshot_time,
         )
+
 
     async def _fetch_okx(self, inst_id: str) -> ExchangeFundingSnapshot:
         funding, oi = await asyncio.gather(
