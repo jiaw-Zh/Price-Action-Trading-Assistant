@@ -81,31 +81,61 @@ def build_market_prompt(data: MarketData, language: str = "zh") -> str:
     lines: list[str] = []
 
     if language == "zh":
-        lines.append("你是一个专业的加密货币交易分析师。请根据以下市场数据，生成一份简洁的分析报告。")
+        lines.append("你是一个专业的加密货币交易分析师与风控官。请根据以下提供的结构化市场数据，生成一份极其严谨、可操作的比特币永续合约交易分析报告。")
         lines.append("")
-        lines.append("## 分析要求")
-        lines.append("1. 市场概况：当前趋势、关键价位、多空倾向")
-        lines.append("2. 量价分析：资金费率、OI 变化、背离信号解读")
-        lines.append("3. 交易建议：具体的操作方向、入场区间、止损位、目标位")
+        lines.append("## 核心分析任务与思考框架")
+        lines.append("1. **趋势与结构共振**：评估工作周期与高周期趋势一致性。分析价格在 Wyckoff 区间（Range）的位置，重点关注 Phase C（Spring/UTAD）或 Phase D 的关键确认信号。")
+        lines.append("2. **订单流与量价动力**：")
+        lines.append("   - 结合价格走势解读 CVD 变化与持仓量（OI）变化。必须严格遵循【CVD/OI/价格共振黄金法则】研判真假突破：")
+        lines.append("     * 价格上涨 + OI增加 + CVD增加 => 强力主动多头建仓（真突破，看涨信号强）")
+        lines.append("     * 价格上涨 + OI减少 + CVD变化平缓 => 空头被迫爆仓/挤压平仓驱动的无量反弹（弱反弹，防范假突破）")
+        lines.append("     * 价格下跌 + OI增加 + CVD减少 => 强力主动空头建仓（真跌破，看空信号强）")
+        lines.append("     * 价格下跌 + OI减少 + CVD变化平缓 => 多头踩踏/爆仓割肉平仓驱动的被动流失（防范超跌反弹或假跌破）")
+        lines.append("     * 价格震荡 + OI显著增加 => 主力密集对倒/建仓蓄势（防范即将到来的剧烈突破）")
+        lines.append("   - 结合资金费率评估市场是否过热，防范极端费率下的反向洗盘。")
+        lines.append("3. **流动性磁吸与关键价位**：确认迫近的未触发流动性池（磁吸位），以及彻底推翻多空逻辑的结构性失效点（Invalidation）。")
+        lines.append("")
+        lines.append("## 交易策略输出规范 (必须严格遵守)")
+        lines.append("- **双向情景规划**：")
+        lines.append("  - **首选方案（主计划）**：当前高确定性共振方向。提供具体的入场区间（Entry Zone）、止损位（Stop Loss，须设在结构失效点之外）以及分批止盈目标（Targets）。")
+        lines.append("  - **备选方案（反转计划）**：若关键失效位被有效破位后的应对策略。")
+        lines.append("- **严格盈亏比（R:R Ratio）**：首个目标位盈亏比必须 >= 1:1.5，最终目标盈亏比建议 >= 1:2。若不满足，请明确提示“盈亏比不佳，建议观望”。")
+        option_duration = "日内超短线交易（持仓数小时）" if data.timeframe in ["1m", "5m", "15m"] else "波段交易（持仓数天）"
+        lines.append(f"- **时间跨度匹配**：当前周期为 {data.timeframe}，交易计划必须匹配其波段属性，预期为 {option_duration}。")
+        lines.append("- **仓位与风险管理**：依据 Wyckoff 阶段置信度及多周期共振情况，给出具体的仓位风险暴露度（如高共振/常规仓位，或建议空仓观望）。")
         lines.append("")
         lines.append("## 输出格式")
-        lines.append("- 使用 Markdown 格式")
-        lines.append("- 语言简洁直接，不要废话")
-        lines.append("- 交易建议要具体（价格、方向、仓位建议）")
-        lines.append("- 如果数据不足，明确说明而非猜测")
+        lines.append("- 使用清晰的 Markdown 标题与列表，粗体标注关键价格。")
+        lines.append("- 语言冷静、简明直接，剔除一切无意义的修饰词。")
+        lines.append("- 数据不齐备时，坚决给出“数据不足，保持观望”的结论。")
     else:
-        lines.append("You are a professional crypto trading analyst. Generate a concise analysis report based on the following market data.")
+        lines.append("You are a professional crypto trading analyst and risk manager. Generate an exceptionally rigorous and actionable analysis report for Bitcoin perpetual contracts based on the following structured market data.")
         lines.append("")
-        lines.append("## Requirements")
-        lines.append("1. Market Overview: current trend, key levels, bias")
-        lines.append("2. Volume/OI Analysis: funding rate, OI changes, divergences")
-        lines.append("3. Trading Suggestions: direction, entry zone, stop loss, targets")
+        lines.append("## Core Analysis Framework")
+        lines.append("1. **Trend & Structure Confluence**: Assess HTF vs. working timeframe trend alignment. Evaluate price location relative to Wyckoff ranges, prioritizing Phase C (Spring/UTAD) or Phase D confirmation signals.")
+        lines.append("2. **Order Flow & Volume Dynamics**:")
+        lines.append("   - Analyze CVD and Open Interest (OI) alongside price action using the strict [CVD/OI/Price Resonance Golden Rule] to identify true vs. fake breakouts:")
+        lines.append("     * Price Up + OI Up + CVD Up => Strong active buying/long accumulation (True Bullish Breakout).")
+        lines.append("     * Price Up + OI Down => Short covering/squeeze (Weak/Fake rally, vulnerable to reversal).")
+        lines.append("     * Price Down + OI Up + CVD Down => Strong active selling/short accumulation (True Bearish Breakdown).")
+        lines.append("     * Price Down + OI Down => Long liquidation/washout (Vulnerable to short-squeeze bounces).")
+        lines.append("     * Price Flat + OI Up => Heavy positioning/accumulation during consolidation (Anticipate high volatility breakout).")
+        lines.append("   - Assess funding rate extremes to guard against contrarian washouts in overleveraged environments.")
+        lines.append("3. **Liquidity Magnets & Key Levels**: Identify nearest unswept liquidity pools (magnets) and structural invalidation levels.")
+        lines.append("")
+        lines.append("## Trading Strategy Specifications (Strictly Enforced)")
+        lines.append("- **Dual-Scenario Planning**:")
+        lines.append("  - **Primary Scenario**: High-confluence bias. Provide specific entry zone, invalidation-based stop loss, and tiered take-profit targets.")
+        lines.append("  - **Alternative Scenario**: Contingency/reversal plan if the key invalidation level is breached.")
+        lines.append("- **Strict Risk-to-Reward (R:R)**: The first target must have an R:R >= 1:1.5, with the final target aiming for R:R >= 1:2. If unmet, explicitly state 'Poor risk-to-reward ratio, hold/neutral recommended'.")
+        option_duration = "intraday scalp (holding hours)" if data.timeframe in ["1m", "5m", "15m"] else "swing trade (holding days)"
+        lines.append(f"- **Horizon Alignment**: The working timeframe is {data.timeframe}, so the trade setup must reflect this horizon: expected to be an {option_duration}.")
+        lines.append("- **Position & Risk Sizing**: Offer explicit risk/position guidelines based on Wyckoff phase confidence and timeframe alignment.")
         lines.append("")
         lines.append("## Output Format")
-        lines.append("- Use Markdown format")
-        lines.append("- Be concise and direct")
-        lines.append("- Be specific with prices and levels")
-        lines.append("- If data is insufficient, say so clearly")
+        lines.append("- Use clean GFM layout with headers, lists, and bold key prices.")
+        lines.append("- Maintain a concise, direct, and objective tone. Cut out conversational fillers.")
+        lines.append("- If data is insufficient, explicitly state 'INSUFFICIENT DATA - STAY NEUTRAL'.")
 
     lines.append("")
     lines.append("---")
@@ -221,7 +251,7 @@ async def call_llm(
         "messages": [
             {
                 "role": "system",
-                "content": "你是一个专业的加密货币交易分析师，擅长价格行为分析、Wyckoff 方法和市场结构分析。输出简洁、直接、可操作的分析报告。" if prompt.startswith("你") else "You are a professional crypto trading analyst specializing in price action, Wyckoff method, and market structure analysis. Output concise, direct, actionable analysis.",
+                "content": "你是一名资深的加密货币自营交易员与风控主管，精通以价格行为（Price Action）、Wyckoff 方法以及订单流（Order Flow）为核心的系统化交易。你对风险极其敏感，只在盈亏比极佳且有高确定性多重共振的情况下推荐交易。你的分析风格冷静、严谨、绝无废话，严格基于提供的数据进行逻辑推演。" if prompt.startswith("你") else "You are a senior crypto proprietary trader and risk manager, specializing in systematic trading using Price Action, Wyckoff theory, and Order Flow analysis. Highly risk-averse, you only recommend trades with premium R:R and multi-confluence alignment. Your tone is cold, rigorous, and direct, drawing conclusions strictly from structured data without generic fillers.",
             },
             {"role": "user", "content": prompt},
         ],
