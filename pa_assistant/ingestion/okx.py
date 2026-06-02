@@ -215,7 +215,7 @@ def okx_symbol(symbol: str) -> str:
     return sym
 
 
-def okx_klines_to_polars(rows: list[list[str]], symbol: str) -> pl.DataFrame:
+def okx_klines_to_polars(rows: list[list[str]], symbol: str, interval: str = "1m") -> pl.DataFrame:
     """Convert OKX raw klines to Polars DataFrame matching canonical kline_1m.
 
     OKX candle format (9 fields):
@@ -236,12 +236,37 @@ def okx_klines_to_polars(rows: list[list[str]], symbol: str) -> pl.DataFrame:
     if not valid:
         return _empty_klines_df()
 
+    # Determine bar duration in ms
+    duration_ms = 60_000  # default 1m
+    if len(valid) >= 2:
+        # If we have multiple candles, compute duration dynamically from the difference
+        # OKX returns candles sorted by open_time descending (newest first).
+        diffs = [abs(int(valid[i][0]) - int(valid[i + 1][0])) for i in range(len(valid) - 1)]
+        if diffs and diffs[0] > 0:
+            duration_ms = diffs[0]
+    else:
+        # Fallback to parsing the interval string
+        val_str = "".join([c for c in interval if c.isdigit()])
+        unit = "".join([c for c in interval if not c.isdigit()]).lower()
+        if val_str:
+            val = int(val_str)
+            if "m" in unit:
+                duration_ms = val * 60_000
+            elif "h" in unit:
+                duration_ms = val * 3_600_000
+            elif "d" in unit:
+                duration_ms = val * 86_400_000
+            elif "w" in unit:
+                duration_ms = val * 86_400_000 * 7
+            elif "M" in interval:  # Month
+                duration_ms = val * 86_400_000 * 30
+
     open_times = [_ms_to_naive_utc(int(r[0])) for r in valid]
     # OKX doesn't provide close_time directly; infer as open_time + bar_duration - 1ms
-    # For simplicity, use open_time + 59999ms for 1m (matches bybit convention)
-    close_times = [_ms_to_naive_utc(int(r[0]) + 59999) for r in valid]
+    close_times = [_ms_to_naive_utc(int(r[0]) + duration_ms - 1) for r in valid]
 
     return pl.DataFrame(
+
         {
             "open_time": open_times,
             "close_time": close_times,

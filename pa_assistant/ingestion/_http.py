@@ -26,8 +26,10 @@ _TRANSIENT_HTTPX_ERRORS: Final[tuple[type[BaseException], ...]] = (
     httpx.PoolTimeout,
     httpx.ConnectTimeout,
     httpx.ReadTimeout,
+    httpx.TimeoutException,
     httpx.RemoteProtocolError,
 )
+
 
 
 def is_transient(exc: BaseException) -> bool:

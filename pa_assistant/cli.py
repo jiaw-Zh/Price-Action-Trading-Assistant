@@ -16,10 +16,11 @@ except Exception:
 import asyncio
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import polars as pl
 import typer
 
 from pa_assistant import __version__
@@ -55,6 +56,83 @@ app = typer.Typer(
 def _bootstrap(settings: Settings) -> None:
     """Configure logging using runtime settings."""
     configure_logging(settings.log_level, json_format=settings.log_json)
+
+
+def load_klines_from_db(
+    conn: Any,
+    symbol: str,
+    timeframe: str,
+    limit_bars: int = 300,
+    columns: list[str] | None = None,
+) -> pl.DataFrame:
+    """Helper to query only the necessary 1m klines from database for resampling to timeframe."""
+    if columns is None:
+        columns = ["open_time", "open", "high", "low", "close", "volume"]
+
+    timeframe_minutes = {
+        "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+        "1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480,
+        "12h": 720, "1d": 1440, "1w": 10080,
+    }
+
+    minutes_per_bar = timeframe_minutes.get(timeframe, 60)
+    total_minutes_needed = int(limit_bars * minutes_per_bar * 2.0)
+
+    now_naive = datetime.now(UTC).replace(tzinfo=None)
+    since_time = now_naive - timedelta(minutes=total_minutes_needed)
+
+    cols_str = ", ".join(columns)
+    df = conn.execute(
+        f"SELECT {cols_str} FROM kline_1m WHERE symbol = ? AND open_time >= ? ORDER BY open_time",
+        [symbol, since_time],
+    ).pl()
+
+    # Safety fallback if we don't have enough history
+    if df.height < 50:
+        df = conn.execute(
+            f"SELECT {cols_str} FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+            [symbol],
+        ).pl()
+
+    return df  # type: ignore[no-any-return]
+
+
+def load_oi_from_db(
+    conn: Any,
+    symbol: str,
+    timeframe: str,
+    limit_bars: int = 300,
+) -> pl.DataFrame:
+    """Helper to query only the necessary 1m open interest from database."""
+    timeframe_minutes = {
+        "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+        "1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480,
+        "12h": 720, "1d": 1440, "1w": 10080,
+    }
+
+    minutes_per_bar = timeframe_minutes.get(timeframe, 60)
+    total_minutes_needed = int(limit_bars * minutes_per_bar * 2.0)
+
+    now_naive = datetime.now(UTC).replace(tzinfo=None)
+    since_time = now_naive - timedelta(minutes=total_minutes_needed)
+
+    df = conn.execute(
+        "SELECT timestamp AS open_time, open_interest AS oi "
+        "FROM oi_1m WHERE symbol = ? AND timestamp >= ? ORDER BY timestamp",
+        [symbol, since_time],
+    ).pl()
+
+    # Safety fallback
+    if df.height < 50:
+        df = conn.execute(
+            "SELECT timestamp AS open_time, open_interest AS oi "
+            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
+            [symbol],
+        ).pl()
+
+    return df  # type: ignore[no-any-return]
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -398,11 +476,9 @@ def analyze_structure(
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        df = conn.execute(
-            "SELECT open_time, open, high, low, close, volume "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
+        df = load_klines_from_db(
+            conn, sym, timeframe, columns=["open_time", "open", "high", "low", "close", "volume"]
+        )
     finally:
         conn.close()
 
@@ -477,12 +553,13 @@ def analyze_volume(
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        df = conn.execute(
-            "SELECT open_time, open, high, low, close, volume, "
-            "quote_volume, taker_buy_base "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
+        df = load_klines_from_db(
+            conn,
+            sym,
+            timeframe,
+            limit_bars=bars,
+            columns=["open_time", "open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]
+        )
     finally:
         conn.close()
 
@@ -576,11 +653,9 @@ def analyze_zones(
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        df = conn.execute(
-            "SELECT open_time, open, high, low, close, volume "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
+        df = load_klines_from_db(
+            conn, sym, timeframe, columns=["open_time", "open", "high", "low", "close", "volume"]
+        )
     finally:
         conn.close()
 
@@ -680,11 +755,9 @@ def analyze_liquidity(
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        df = conn.execute(
-            "SELECT open_time, open, high, low, close, volume "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
+        df = load_klines_from_db(
+            conn, sym, timeframe, columns=["open_time", "open", "high", "low", "close", "volume"]
+        )
     finally:
         conn.close()
 
@@ -773,11 +846,9 @@ def analyze_stop_hunts(
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        df = conn.execute(
-            "SELECT open_time, open, high, low, close, volume "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
+        df = load_klines_from_db(
+            conn, sym, timeframe, columns=["open_time", "open", "high", "low", "close", "volume"]
+        )
     finally:
         conn.close()
 
@@ -884,17 +955,13 @@ def analyze_divergences(
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        klines = conn.execute(
-            "SELECT open_time, open, high, low, close, volume, "
-            "quote_volume, taker_buy_base "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
-        oi_df = conn.execute(
-            "SELECT timestamp AS open_time, open_interest AS oi "
-            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
-            [sym],
-        ).pl()
+        klines = load_klines_from_db(
+            conn,
+            sym,
+            timeframe,
+            columns=["open_time", "open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]
+        )
+        oi_df = load_oi_from_db(conn, sym, timeframe)
     finally:
         conn.close()
 
@@ -1015,17 +1082,13 @@ def wyckoff(
 
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        klines = conn.execute(
-            "SELECT open_time, open, high, low, close, volume, "
-            "quote_volume, taker_buy_base "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
-        oi_df = conn.execute(
-            "SELECT timestamp AS open_time, open_interest AS oi "
-            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
-            [sym],
-        ).pl()
+        klines = load_klines_from_db(
+            conn,
+            sym,
+            timeframe,
+            columns=["open_time", "open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]
+        )
+        oi_df = load_oi_from_db(conn, sym, timeframe)
     finally:
         conn.close()
 
@@ -1186,17 +1249,13 @@ def context_report(
     # ------------------------------------------------------------------
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        klines = conn.execute(
-            "SELECT open_time, open, high, low, close, volume, "
-            "quote_volume, taker_buy_base "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
-        oi_df = conn.execute(
-            "SELECT timestamp AS open_time, open_interest AS oi "
-            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
-            [sym],
-        ).pl()
+        klines = load_klines_from_db(
+            conn,
+            sym,
+            timeframe,
+            columns=["open_time", "open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]
+        )
+        oi_df = load_oi_from_db(conn, sym, timeframe)
         funding_row = conn.execute(
             "SELECT weighted_rate FROM funding_weighted "
             "WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
@@ -1400,17 +1459,13 @@ def send_alert(
     # ----- 1. load + analyze (mirrors context-report) -----
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
-        klines = conn.execute(
-            "SELECT open_time, open, high, low, close, volume, "
-            "quote_volume, taker_buy_base "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [sym],
-        ).pl()
-        oi_df = conn.execute(
-            "SELECT timestamp AS open_time, open_interest AS oi "
-            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
-            [sym],
-        ).pl()
+        klines = load_klines_from_db(
+            conn,
+            sym,
+            timeframe,
+            columns=["open_time", "open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]
+        )
+        oi_df = load_oi_from_db(conn, sym, timeframe)
         funding_row = conn.execute(
             "SELECT weighted_rate FROM funding_weighted "
             "WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
@@ -1770,7 +1825,7 @@ def schedule_start(
 
     # Keep the main thread alive
     try:
-        signal.pause()
+        signal.pause()  # type: ignore[attr-defined]
     except AttributeError:
         # Windows doesn't have signal.pause()
         import time

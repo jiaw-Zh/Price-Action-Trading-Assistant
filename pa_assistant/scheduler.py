@@ -281,19 +281,51 @@ def collect_market_data(
     """Collect market data from DuckDB for LLM analysis."""
 
 
+    timeframe_minutes = {
+        "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+        "1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480,
+        "12h": 720, "1d": 1440, "1w": 10080,
+    }
+    max_tf = timeframe
+    if htf and timeframe_minutes.get(htf, 0) > timeframe_minutes.get(timeframe, 0):
+        max_tf = htf
+    minutes_per_bar = timeframe_minutes.get(max_tf, 60)
+    total_minutes_needed = int(200 * minutes_per_bar * 2.0)
+
+    now_naive = datetime.now(UTC).replace(tzinfo=None)
+    since_time = now_naive - timedelta(minutes=total_minutes_needed)
+
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
     try:
         klines = conn.execute(
             "SELECT open_time, open, high, low, close, volume, "
             "quote_volume, taker_buy_base "
-            "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
-            [settings.symbol],
+            "FROM kline_1m WHERE symbol = ? AND open_time >= ? ORDER BY open_time",
+            [settings.symbol, since_time],
         ).pl()
+
+        # Fallback if too few records are retrieved (e.g. fresh test db)
+        if klines.height < 50:
+            klines = conn.execute(
+                "SELECT open_time, open, high, low, close, volume, "
+                "quote_volume, taker_buy_base "
+                "FROM kline_1m WHERE symbol = ? ORDER BY open_time",
+                [settings.symbol],
+            ).pl()
+
         oi_df = conn.execute(
             "SELECT timestamp AS open_time, open_interest AS oi "
-            "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
-            [settings.symbol],
+            "FROM oi_1m WHERE symbol = ? AND timestamp >= ? ORDER BY timestamp",
+            [settings.symbol, since_time],
         ).pl()
+
+        if oi_df.height < 50:
+            oi_df = conn.execute(
+                "SELECT timestamp AS open_time, open_interest AS oi "
+                "FROM oi_1m WHERE symbol = ? ORDER BY timestamp",
+                [settings.symbol],
+            ).pl()
+
         funding_row = conn.execute(
             "SELECT weighted_rate FROM funding_weighted "
             "WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
@@ -301,6 +333,7 @@ def collect_market_data(
         ).fetchone()
     finally:
         conn.close()
+
 
     if klines.is_empty():
         raise ValueError(f"No klines for {settings.symbol}. Run `pa backfill` first.")
@@ -371,8 +404,6 @@ def collect_market_data(
     oi_now = None
     oi_24h_ago = None
     if not oi_df.is_empty():
-        from datetime import timedelta
-
         oi_now_row = oi_df.row(oi_df.height - 1, named=True)
         oi_now = float(oi_now_row["oi"])
         target = oi_now_row["open_time"] - timedelta(hours=24)
