@@ -158,7 +158,7 @@ class OkxRestClient(AsyncRestClient):
     ) -> AsyncIterator[list[list[str]]]:
         """Yield successive pages of klines covering ``[start_ms, end_ms)``.
 
-        OKX returns data newest-first and paginates via ``after`` (return
+        OKX returns data newest-first (descending) and paginates via ``after`` (return
         records older than this timestamp). We page backwards until we reach
         ``start_ms``.
         """
@@ -173,20 +173,29 @@ class OkxRestClient(AsyncRestClient):
             if not page:
                 break
 
-            # OKX returns newest first; reverse to chronological order
-            page.reverse()
-
+            filtered = []
+            reached_start = False
             for candle in page:
                 if len(candle) < 9:
                     continue
                 ts = int(candle[0])
                 if ts < start_ms:
-                    return
+                    reached_start = True
+                    continue
                 if ts < end_ms:
-                    yield [candle]
+                    filtered.append(candle)
 
-            # Move pagination cursor: oldest candle in this page - 1ms
-            oldest_ts = int(page[0][0])
+            if filtered:
+                # Reverse to chronological order (oldest first)
+                filtered.reverse()
+                yield filtered
+
+            if reached_start:
+                break
+
+            # Move pagination cursor: oldest candle in the raw page - 1ms
+            # Since page is descending (newest first), page[-1] is the oldest candle
+            oldest_ts = int(page[-1][0])
             next_after = str(oldest_ts - 1)
             if next_after == after:
                 break  # safety: avoid infinite loop

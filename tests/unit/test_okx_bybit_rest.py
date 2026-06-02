@@ -108,6 +108,55 @@ async def test_okx_empty_data_raises() -> None:
             await c.get_funding_rate("BTC-USDT-SWAP")
 
 
+async def test_okx_iter_klines_ok() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v5/market/candles"
+        assert request.url.params["instId"] == "BTC-USDT-SWAP"
+        assert request.url.params["bar"] == "1m"
+        calls.append(request)
+
+        after = request.url.params.get("after")
+        if after is None:
+            return httpx.Response(
+                200,
+                json={
+                    "code": "0",
+                    "msg": "",
+                    "data": [
+                        ["1000", "50000", "50100", "49900", "50050", "10", "10", "500000", "1"],
+                        ["900", "49900", "50000", "49800", "49900", "8", "8", "399200", "1"],
+                        ["800", "49800", "49900", "49700", "49800", "5", "5", "249000", "1"],
+                    ],
+                },
+            )
+        elif after == "799":
+            return httpx.Response(
+                200,
+                json={
+                    "code": "0",
+                    "msg": "",
+                    "data": [
+                        ["700", "49700", "49800", "49600", "49700", "4", "4", "198800", "1"],
+                        ["600", "49600", "49700", "49500", "49600", "3", "3", "148800", "1"],
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+
+    async with _okx(handler) as c:
+        pages = []
+        async for page in c.iter_klines("BTC-USDT-SWAP", "1m", start_ms=750, end_ms=950):
+            pages.append(page)
+
+    assert len(pages) == 1
+    assert len(pages[0]) == 2
+    assert pages[0][0][0] == "800"
+    assert pages[0][1][0] == "900"
+    assert len(calls) == 2
+
+
 # ---------------------------------------------------------------------------
 # Bybit
 # ---------------------------------------------------------------------------
