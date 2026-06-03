@@ -602,8 +602,17 @@ async def run_analysis_job(
         )
 
         # 3. Build notification message
+        from datetime import timezone, timedelta
         tf_label = timeframe.upper()
-        title = f"[{settings.symbol} {tf_label}] AI 分析报告"
+
+        # Convert timestamp to Shanghai time (UTC+8)
+        dt_utc = market_data.timestamp
+        if dt_utc.tzinfo is None:
+            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        dt_sh = dt_utc.astimezone(timezone(timedelta(hours=8)))
+        time_str = dt_sh.strftime("%Y.%m.%d %I%p")
+
+        title = f"[{time_str} {settings.symbol} {tf_label}] AI 分析报告"
 
         message = NotificationMessage(
             title=title,
