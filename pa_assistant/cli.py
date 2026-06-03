@@ -1848,23 +1848,23 @@ def schedule_start(
     typer.echo("Press Ctrl+C to stop")
     typer.echo("")
 
-    scheduler = create_scheduler(language=language)
-    scheduler.start()
+    import asyncio
 
-    # Keep the main thread alive
-    try:
-        signal.pause()  # type: ignore[attr-defined]
-    except AttributeError:
-        # Windows doesn't have signal.pause()
-        import time
-
+    async def _run_scheduler() -> None:
+        scheduler = create_scheduler(language=language)
+        scheduler.start()
         try:
             while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
+                await asyncio.sleep(1)
+        except (KeyboardInterrupt, asyncio.CancelledError):
             pass
+        finally:
+            scheduler.shutdown()
 
-    scheduler.shutdown()
+    try:
+        asyncio.run(_run_scheduler())
+    except KeyboardInterrupt:
+        pass
     typer.echo("\nScheduler stopped.")
 
 
