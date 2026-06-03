@@ -103,20 +103,59 @@ def configured_channels(settings: Settings) -> list[NotificationChannel]:
                 proxy_url=settings.http_proxy_url,
             )
         )
-    if settings.lark_webhook_url is not None:
-        signing_secret = (
-            settings.lark_signing_secret.get_secret_value()
-            if settings.lark_signing_secret
-            else None
-        )
-        channels.append(
-            LarkChannel(
-                webhook_url=settings.lark_webhook_url.get_secret_value(),
-                signing_secret=signing_secret,
-                proxy_url=settings.http_proxy_url,
+    if settings.lark_app_id is not None and settings.lark_app_secret is not None:
+        receive_id = settings.get_lark_receive_id_for_timeframe("")
+        receive_id_type = settings.get_lark_receive_id_type_for_timeframe("")
+        if receive_id:
+            channels.append(
+                LarkChannel(
+                    app_id=settings.lark_app_id.get_secret_value(),
+                    app_secret=settings.lark_app_secret.get_secret_value(),
+                    receive_id=receive_id.get_secret_value(),
+                    receive_id_type=receive_id_type,
+                    proxy_url=settings.http_proxy_url,
+                )
             )
-        )
     return channels
+
+
+def get_lark_channel_for_timeframe(settings: Settings, timeframe: str) -> LarkChannel | None:
+    """Resolve and build a customized LarkChannel for the timeframe, with fallback cascades."""
+    tf_lower = timeframe.lower()
+    from pa_assistant.notifications.lark import LarkChannel
+
+    app_id_val = None
+    app_secret_val = None
+
+    if tf_lower == "1h":
+        app_id_val = settings.lark_app_id_1h or settings.lark_app_id
+        app_secret_val = settings.lark_app_secret_1h or settings.lark_app_secret
+    elif tf_lower == "4h":
+        app_id_val = settings.lark_app_id_4h or settings.lark_app_id
+        app_secret_val = settings.lark_app_secret_4h or settings.lark_app_secret
+    elif tf_lower == "1d":
+        app_id_val = settings.lark_app_id_1d or settings.lark_app_id
+        app_secret_val = settings.lark_app_secret_1d or settings.lark_app_secret
+    else:
+        app_id_val = settings.lark_app_id
+        app_secret_val = settings.lark_app_secret
+
+    if not app_id_val or not app_secret_val:
+        return None
+
+    receive_id = settings.get_lark_receive_id_for_timeframe(timeframe)
+    receive_id_type = settings.get_lark_receive_id_type_for_timeframe(timeframe)
+
+    if not receive_id:
+        return None
+
+    return LarkChannel(
+        app_id=app_id_val.get_secret_value(),
+        app_secret=app_secret_val.get_secret_value(),
+        receive_id=receive_id.get_secret_value(),
+        receive_id_type=receive_id_type,
+        proxy_url=settings.http_proxy_url,
+    )
 
 
 async def send_to_all(
@@ -154,5 +193,6 @@ __all__ = [
     "NotificationChannel",
     "NotificationMessage",
     "configured_channels",
+    "get_lark_channel_for_timeframe",
     "send_to_all",
 ]

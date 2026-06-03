@@ -552,30 +552,11 @@ async def run_analysis_job(
 
 
             # Apply Lark specific routing override if configured
-            tf_lower = timeframe.lower()
-            specific_webhook = None
-            if tf_lower == "1h" and settings.lark_webhook_url_1h:
-                specific_webhook = settings.lark_webhook_url_1h.get_secret_value()
-            elif tf_lower == "4h" and settings.lark_webhook_url_4h:
-                specific_webhook = settings.lark_webhook_url_4h.get_secret_value()
-            elif tf_lower == "1d" and settings.lark_webhook_url_1d:
-                specific_webhook = settings.lark_webhook_url_1d.get_secret_value()
-
-            if specific_webhook:
+            from pa_assistant.notifications import get_lark_channel_for_timeframe
+            lark_override = get_lark_channel_for_timeframe(settings, timeframe)
+            if lark_override:
                 channels = [c for c in channels if c.name != "lark"]
-                from pa_assistant.notifications.lark import LarkChannel
-                signing_secret = (
-                    settings.lark_signing_secret.get_secret_value()
-                    if settings.lark_signing_secret
-                    else None
-                )
-                channels.append(
-                    LarkChannel(
-                        webhook_url=specific_webhook,
-                        signing_secret=signing_secret,
-                        proxy_url=settings.http_proxy_url,
-                    )
-                )
+                channels.append(lark_override)
 
             if channels:
                 await send_to_all(channels, message)
@@ -626,32 +607,13 @@ async def run_analysis_job(
         # 4. Push to configured channels (with timeframe-specific Lark bot overrides)
         channels = configured_channels(settings)
 
-        specific_webhook = None
-        tf_lower = timeframe.lower()
-        if tf_lower == "1h" and settings.lark_webhook_url_1h:
-            specific_webhook = settings.lark_webhook_url_1h.get_secret_value()
-        elif tf_lower == "4h" and settings.lark_webhook_url_4h:
-            specific_webhook = settings.lark_webhook_url_4h.get_secret_value()
-        elif tf_lower == "1d" and settings.lark_webhook_url_1d:
-            specific_webhook = settings.lark_webhook_url_1d.get_secret_value()
-
-        if specific_webhook:
+        # Apply Lark specific routing override if configured
+        from pa_assistant.notifications import get_lark_channel_for_timeframe
+        lark_override = get_lark_channel_for_timeframe(settings, timeframe)
+        if lark_override:
             # Remove global Lark channel if present
             channels = [c for c in channels if c.name != "lark"]
-            # Append timeframe-specific Lark channel
-            from pa_assistant.notifications.lark import LarkChannel
-            signing_secret = (
-                settings.lark_signing_secret.get_secret_value()
-                if settings.lark_signing_secret
-                else None
-            )
-            channels.append(
-                LarkChannel(
-                    webhook_url=specific_webhook,
-                    signing_secret=signing_secret,
-                    proxy_url=settings.http_proxy_url,
-                )
-            )
+            channels.append(lark_override)
 
         if not channels:
             log.warning("no_notification_channels_configured")

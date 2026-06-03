@@ -18,7 +18,7 @@ from pa_assistant.notifications import (
     NotificationMessage,
     send_to_all,
 )
-from pa_assistant.notifications.lark import LarkChannel, _compute_lark_sign
+from pa_assistant.notifications.lark import LarkChannel
 from pa_assistant.notifications.telegram import TelegramChannel, _escape_mdv2
 from pa_assistant.notifications.wechat import WeChatWorkChannel
 
@@ -170,59 +170,83 @@ async def test_wechat_raises_on_api_errcode() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_lark_sign_deterministic_for_same_inputs() -> None:
-    a = _compute_lark_sign(1700000000, "secret")
-    b = _compute_lark_sign(1700000000, "secret")
-    assert a == b
-    # Different timestamp produces different sign
-    c = _compute_lark_sign(1700000001, "secret")
-    assert a != c
+@pytest.mark.asyncio
+async def test_lark_sends_interactive_card_payload_app() -> None:
+    captured: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if "tenant_access_token/internal" in path:
+            body = json.loads(request.content)
+            captured.append({"type": "token", "body": body})
+            return httpx.Response(200, json={"code": 0, "tenant_access_token": "mock-token-123"})
+        elif "im/v1/messages" in path:
+            body = json.loads(request.content)
+            captured.append({
+                "type": "send",
+                "url": str(request.url),
+                "headers": dict(request.headers),
+                "body": body,
+            })
+            return httpx.Response(200, json={"code": 0})
+        return httpx.Response(404)
+
+    with _patch_async_client(handler):
+        ch = LarkChannel(
+            app_id="cli_123",
+            app_secret="sec_123",
+            receive_id="oc_456",
+            receive_id_type="chat_id",
+        )
+        await ch.send(
+            NotificationMessage(title="T", body="B", timeframe="4h", side="bullish")
+        )
+
+    token_req = next(c for c in captured if c["type"] == "token")
+    assert token_req["body"]["app_id"] == "cli_123"
+    assert token_req["body"]["app_secret"] == "sec_123"
+
+    send_req = next(c for c in captured if c["type"] == "send")
+    assert "receive_id_type=chat_id" in send_req["url"]
+    assert send_req["headers"]["authorization"] == "Bearer mock-token-123"
+    assert send_req["body"]["receive_id"] == "oc_456"
+    assert send_req["body"]["msg_type"] == "interactive"
+    
+    card_content = json.loads(send_req["body"]["content"])
+    assert card_content["header"]["title"]["content"] == "[4H] T"
+    assert card_content["header"]["template"] == "green"
+    assert card_content["elements"][0]["text"]["content"] == "B"
 
 
 @pytest.mark.asyncio
-async def test_lark_sends_interactive_card_payload() -> None:
-    captured: dict[str, Any] = {}
-
+async def test_lark_app_raises_on_token_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"code": 0})
+        return httpx.Response(200, json={"code": 10008, "msg": "invalid app_id"})
 
     with _patch_async_client(handler):
-        ch = LarkChannel(webhook_url="https://lark/x")
-        await ch.send(NotificationMessage(title="T", body="B", timeframe="4h", side="bullish"))
-
-    assert captured["body"]["msg_type"] == "interactive"
-    assert captured["body"]["card"]["header"]["title"]["content"] == "[4H] T"
-    assert captured["body"]["card"]["header"]["template"] == "green"
-    assert captured["body"]["card"]["elements"][0]["text"]["content"] == "B"
-    # No signing fields without secret
-    assert "sign" not in captured["body"]
-
+        ch = LarkChannel(
+            app_id="cli_123",
+            app_secret="sec_123",
+            receive_id="oc_456",
+        )
+        with pytest.raises(RuntimeError, match="Lark Token API error"):
+            await ch.send(NotificationMessage(title="T", body="B"))
 
 
 @pytest.mark.asyncio
-async def test_lark_includes_sign_when_secret_provided() -> None:
-    captured: dict[str, Any] = {}
-
+async def test_lark_app_raises_on_send_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"code": 0})
+        path = request.url.path
+        if "tenant_access_token/internal" in path:
+            return httpx.Response(200, json={"code": 0, "tenant_access_token": "mock-token"})
+        return httpx.Response(200, json={"code": 9499, "msg": "no permission"})
 
     with _patch_async_client(handler):
-        ch = LarkChannel(webhook_url="https://lark/x", signing_secret="topsecret")
-        await ch.send(NotificationMessage(title="T", body="B"))
-
-    assert "sign" in captured["body"]
-    assert "timestamp" in captured["body"]
-
-
-@pytest.mark.asyncio
-async def test_lark_raises_on_api_error() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": 9499, "msg": "bad"})
-
-    with _patch_async_client(handler):
-        ch = LarkChannel(webhook_url="https://lark/x")
+        ch = LarkChannel(
+            app_id="cli_123",
+            app_secret="sec_123",
+            receive_id="oc_456",
+        )
         with pytest.raises(RuntimeError, match="Lark API error"):
             await ch.send(NotificationMessage(title="T", body="B"))
 

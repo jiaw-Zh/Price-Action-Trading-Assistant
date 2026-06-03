@@ -32,33 +32,49 @@ if TYPE_CHECKING:
     from pa_assistant.notifications import NotificationMessage
 
 
-def _compute_lark_sign(timestamp: int, secret: str) -> str:
-    """Lark signing recipe: base64(HMAC-SHA256(key=f"{ts}\\n{secret}", msg=b""))."""
-    string_to_sign = f"{timestamp}\n{secret}"
-    digest = hmac.new(
-        string_to_sign.encode("utf-8"),
-        digestmod=hashlib.sha256,
-    ).digest()
-    return base64.b64encode(digest).decode("utf-8")
-
+import json
 
 class LarkChannel:
-    """Send messages via Lark / Feishu group bot webhook."""
+    """Send messages via Lark / Feishu Custom App Bot."""
 
     name = "lark"
 
     def __init__(
         self,
         *,
-        webhook_url: str,
-        signing_secret: str | None = None,
+        app_id: str,
+        app_secret: str,
+        receive_id: str,
+        receive_id_type: str = "chat_id",
         proxy_url: str | None = None,
         timeout_s: float = 10.0,
     ) -> None:
-        self._webhook_url = webhook_url
-        self._signing_secret = signing_secret
+        self._app_id = app_id
+        self._app_secret = app_secret
+        self._receive_id = receive_id
+        self._receive_id_type = receive_id_type
         self._proxy_url = proxy_url
         self._timeout_s = timeout_s
+
+    async def _get_tenant_access_token(self) -> str:
+        """Fetch tenant_access_token from Lark API."""
+        log = get_logger("lark")
+        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        payload = {
+            "app_id": self._app_id,
+            "app_secret": self._app_secret,
+        }
+        async with httpx.AsyncClient(
+            proxy=self._proxy_url, timeout=self._timeout_s
+        ) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            code = data.get("code", 0)
+            if code != 0:
+                log.error("lark_token_api_error", response=data)
+                raise RuntimeError(f"Lark Token API error: {data}")
+            return data["tenant_access_token"]
 
     async def send(self, message: NotificationMessage) -> None:
         log = get_logger(__name__)
@@ -85,48 +101,53 @@ class LarkChannel:
         if message.timeframe and not message.title.startswith("["):
             card_title = f"[{message.timeframe.upper()}] {card_title}"
 
-        # Construct Lark Interactive Card Payload
-        payload: dict[str, object] = {
-            "msg_type": "interactive",
-            "card": {
-                "config": {
-                    "wide_screen_mode": True,
-                    "enable_forward": True,
-                },
-                "header": {
-                    "template": template,
-                    "title": {
-                        "content": card_title,
-                        "tag": "plain_text",
-                    },
-                },
-                "elements": [
-                    {
-                        "tag": "div",
-                        "text": {
-                            "content": message.body,
-                            "tag": "lark_md",
-                        },
-                    }
-                ],
+        # Construct Lark Interactive Card Content
+        card_content = {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": True,
             },
+            "header": {
+                "template": template,
+                "title": {
+                    "content": card_title,
+                    "tag": "plain_text",
+                },
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "content": message.body,
+                        "tag": "lark_md",
+                    },
+                }
+            ],
         }
 
-        if self._signing_secret is not None:
-            ts = int(time.time())
-            payload["timestamp"] = str(ts)
-            payload["sign"] = _compute_lark_sign(ts, self._signing_secret)
+        # Construct Lark Send Message Payload
+        # Content must be a JSON-escaped string
+        payload = {
+            "receive_id": self._receive_id,
+            "msg_type": "interactive",
+            "content": json.dumps(card_content),
+        }
 
+        token = await self._get_tenant_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+
+        url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={self._receive_id_type}"
 
         async with httpx.AsyncClient(
             proxy=self._proxy_url, timeout=self._timeout_s
         ) as client:
-            response = await client.post(self._webhook_url, json=payload)
+            response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
-            # Lark uses ``code`` (int, 0 = ok) AND ``StatusCode`` (legacy);
-            # accept either.
-            err = data.get("code", data.get("StatusCode", 0))
+            err = data.get("code", 0)
             if err != 0:
                 log.error("lark_send_api_error", response=data)
                 raise RuntimeError(f"Lark API error: {data}")

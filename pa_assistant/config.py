@@ -92,11 +92,60 @@ class Settings(BaseSettings):
     wechat_work_webhook_url: SecretStr | None = None
 
     # ---------- Lark / Feishu (飞书) ----------
-    lark_webhook_url: SecretStr | None = None
-    lark_signing_secret: SecretStr | None = None  # optional: for HMAC-signed webhooks
-    lark_webhook_url_1h: SecretStr | None = None
-    lark_webhook_url_4h: SecretStr | None = None
-    lark_webhook_url_1d: SecretStr | None = None
+    lark_app_id: SecretStr | None = None
+    lark_app_secret: SecretStr | None = None
+    
+    lark_receive_id: SecretStr | None = None
+    lark_chat_id: SecretStr | None = None  # Alias for lark_receive_id
+    lark_receive_id_type: str = "chat_id"
+    lark_chat_id_type: str | None = None  # Alias for lark_receive_id_type
+
+    lark_app_id_1h: SecretStr | None = None
+    lark_app_secret_1h: SecretStr | None = None
+    lark_receive_id_1h: SecretStr | None = None
+    lark_chat_id_1h: SecretStr | None = None
+    lark_receive_id_type_1h: str | None = None
+    lark_chat_id_type_1h: str | None = None
+
+    lark_app_id_4h: SecretStr | None = None
+    lark_app_secret_4h: SecretStr | None = None
+    lark_receive_id_4h: SecretStr | None = None
+    lark_chat_id_4h: SecretStr | None = None
+    lark_receive_id_type_4h: str | None = None
+    lark_chat_id_type_4h: str | None = None
+
+    lark_app_id_1d: SecretStr | None = None
+    lark_app_secret_1d: SecretStr | None = None
+    lark_receive_id_1d: SecretStr | None = None
+    lark_chat_id_1d: SecretStr | None = None
+    lark_receive_id_type_1d: str | None = None
+    lark_chat_id_type_1d: str | None = None
+
+    def get_lark_receive_id_for_timeframe(self, timeframe: str) -> SecretStr | None:
+        """Get Receive ID with fallback cascade (per-timeframe -> default)."""
+        tf_lower = timeframe.lower()
+        if tf_lower == "1h":
+            return self.lark_receive_id_1h or self.lark_chat_id_1h or self.lark_receive_id or self.lark_chat_id
+        if tf_lower == "4h":
+            return self.lark_receive_id_4h or self.lark_chat_id_4h or self.lark_receive_id or self.lark_chat_id
+        if tf_lower == "1d":
+            return self.lark_receive_id_1d or self.lark_chat_id_1d or self.lark_receive_id or self.lark_chat_id
+        return self.lark_receive_id or self.lark_chat_id
+
+    def get_lark_receive_id_type_for_timeframe(self, timeframe: str) -> str:
+        """Get Receive ID Type with fallback cascade (per-timeframe -> default)."""
+        tf_lower = timeframe.lower()
+        if tf_lower == "1h":
+            val = self.lark_receive_id_type_1h or self.lark_chat_id_type_1h or self.lark_receive_id_type or self.lark_chat_id_type
+            return val or "chat_id"
+        if tf_lower == "4h":
+            val = self.lark_receive_id_type_4h or self.lark_chat_id_type_4h or self.lark_receive_id_type or self.lark_chat_id_type
+            return val or "chat_id"
+        if tf_lower == "1d":
+            val = self.lark_receive_id_type_1d or self.lark_chat_id_type_1d or self.lark_receive_id_type or self.lark_chat_id_type
+            return val or "chat_id"
+        val = self.lark_receive_id_type or self.lark_chat_id_type
+        return val or "chat_id"
 
     # ----- Computed helpers -----
 

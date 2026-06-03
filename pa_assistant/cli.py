@@ -1705,30 +1705,11 @@ def ai_analyze(
 
         # Dispatch to channels (with timeframe-specific Lark overrides)
         channels = configured_channels(settings)
-        tf_lower = timeframe.lower()
-        specific_webhook = None
-        if tf_lower == "1h" and settings.lark_webhook_url_1h:
-            specific_webhook = settings.lark_webhook_url_1h.get_secret_value()
-        elif tf_lower == "4h" and settings.lark_webhook_url_4h:
-            specific_webhook = settings.lark_webhook_url_4h.get_secret_value()
-        elif tf_lower == "1d" and settings.lark_webhook_url_1d:
-            specific_webhook = settings.lark_webhook_url_1d.get_secret_value()
-
-        if specific_webhook:
+        from pa_assistant.notifications import get_lark_channel_for_timeframe
+        lark_override = get_lark_channel_for_timeframe(settings, timeframe)
+        if lark_override:
             channels = [c for c in channels if c.name != "lark"]
-            from pa_assistant.notifications.lark import LarkChannel
-            signing_secret = (
-                settings.lark_signing_secret.get_secret_value()
-                if settings.lark_signing_secret
-                else None
-            )
-            channels.append(
-                LarkChannel(
-                    webhook_url=specific_webhook,
-                    signing_secret=signing_secret,
-                    proxy_url=settings.http_proxy_url,
-                )
-            )
+            channels.append(lark_override)
 
         if channels:
             typer.echo("正在发送紧急数据失效警报推送...")
@@ -1792,6 +1773,11 @@ def ai_analyze(
 
     # 5. Push to channels
     channels = configured_channels(settings)
+    from pa_assistant.notifications import get_lark_channel_for_timeframe
+    lark_override = get_lark_channel_for_timeframe(settings, timeframe)
+    if lark_override:
+        channels = [c for c in channels if c.name != "lark"]
+        channels.append(lark_override)
     if not channels:
         typer.secho(
             "No notification channels configured. "
