@@ -62,18 +62,61 @@ class LarkChannel:
 
     async def send(self, message: NotificationMessage) -> None:
         log = get_logger(__name__)
-        # Lark text messages use the same body for both formats; we just
-        # prepend the title.
-        text = f"{message.title}\n\n{message.body}"
+
+        # Determine card template color based on side and title/body content
+        template = "grey"
+        side_lower = (message.side or "").lower()
+        title_lower = message.title.lower()
+        body_lower = message.body.lower()
+
+        if any(x in side_lower for x in ["bullish", "long", "up"]) or any(x in title_lower for x in ["看多", "做多"]):
+            template = "green"
+        elif any(x in side_lower for x in ["bearish", "short", "down"]) or any(x in title_lower for x in ["看空", "做空"]):
+            template = "red"
+        else:
+            first_part = body_lower[:200]
+            if any(x in first_part for x in ["看多", "做多", "bullish", "long"]):
+                template = "green"
+            elif any(x in first_part for x in ["看空", "做空", "bearish", "short"]):
+                template = "red"
+
+        # Format title cleanly
+        card_title = message.title
+        if message.timeframe and not message.title.startswith("["):
+            card_title = f"[{message.timeframe.upper()}] {card_title}"
+
+        # Construct Lark Interactive Card Payload
         payload: dict[str, object] = {
-            "msg_type": "text",
-            "content": {"text": text},
+            "msg_type": "interactive",
+            "card": {
+                "config": {
+                    "wide_screen_mode": True,
+                    "enable_forward": True,
+                },
+                "header": {
+                    "template": template,
+                    "title": {
+                        "content": card_title,
+                        "tag": "plain_text",
+                    },
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {
+                            "content": message.body,
+                            "tag": "lark_md",
+                        },
+                    }
+                ],
+            },
         }
 
         if self._signing_secret is not None:
             ts = int(time.time())
             payload["timestamp"] = str(ts)
             payload["sign"] = _compute_lark_sign(ts, self._signing_secret)
+
 
         async with httpx.AsyncClient(
             proxy=self._proxy_url, timeout=self._timeout_s

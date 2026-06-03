@@ -61,6 +61,9 @@ class NotificationMessage:
     title: str
     body: str
     format: MessageFormat = "markdown"
+    timeframe: str | None = None
+    side: str | None = None
+
 
 
 @runtime_checkable

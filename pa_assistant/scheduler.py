@@ -541,8 +541,15 @@ async def run_analysis_job(
                 f"2. 请检查 `.env` 中的 `HTTP_PROXY_URL` 是否失效，或更换为其他可用代理 IP。\n"
                 f"3. 检查交易所 API 是否有临时维护公告。"
             )
-            message = NotificationMessage(title=title, body=body, format="markdown")
+            message = NotificationMessage(
+                title=title,
+                body=body,
+                format="markdown",
+                timeframe=timeframe,
+                side="neutral",
+            )
             channels = configured_channels(settings)
+
 
             # Apply Lark specific routing override if configured
             tf_lower = timeframe.lower()
@@ -602,7 +609,10 @@ async def run_analysis_job(
             title=title,
             body=report,
             format="markdown",
+            timeframe=timeframe,
+            side=market_data.working_trend,
         )
+
 
         # 4. Push to configured channels (with timeframe-specific Lark bot overrides)
         channels = configured_channels(settings)

@@ -180,7 +180,7 @@ def test_lark_sign_deterministic_for_same_inputs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lark_sends_text_payload() -> None:
+async def test_lark_sends_interactive_card_payload() -> None:
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -189,12 +189,15 @@ async def test_lark_sends_text_payload() -> None:
 
     with _patch_async_client(handler):
         ch = LarkChannel(webhook_url="https://lark/x")
-        await ch.send(NotificationMessage(title="T", body="B"))
+        await ch.send(NotificationMessage(title="T", body="B", timeframe="4h", side="bullish"))
 
-    assert captured["body"]["msg_type"] == "text"
-    assert "T" in captured["body"]["content"]["text"]
+    assert captured["body"]["msg_type"] == "interactive"
+    assert captured["body"]["card"]["header"]["title"]["content"] == "[4H] T"
+    assert captured["body"]["card"]["header"]["template"] == "green"
+    assert captured["body"]["card"]["elements"][0]["text"]["content"] == "B"
     # No signing fields without secret
     assert "sign" not in captured["body"]
+
 
 
 @pytest.mark.asyncio

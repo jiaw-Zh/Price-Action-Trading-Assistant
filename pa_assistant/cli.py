@@ -1578,7 +1578,13 @@ def send_alert(
         title or f"[{sym} {timeframe}] 综合倾向: {bias_zh} @ ${last_close:,.0f}"
     )
     body = render_markdown(report, language="zh")
-    message = NotificationMessage(title=derived_title, body=body, format="markdown")
+    message = NotificationMessage(
+        title=derived_title,
+        body=body,
+        format="markdown",
+        timeframe=timeframe,
+        side=report.scorecard.net_bias,
+    )
 
     if dry_run:
         typer.secho("[dry-run] would send:", fg=typer.colors.YELLOW, bold=True)
@@ -1682,7 +1688,13 @@ def ai_analyze(
             f"2. 请检查 `.env` 中的 `HTTP_PROXY_URL` 是否失效，或更换为其他可用代理 IP。\n"
             f"3. 检查交易所 API 是否有临时维护公告。"
         )
-        message = NotificationMessage(title=title, body=body, format="markdown")
+        message = NotificationMessage(
+            title=title,
+            body=body,
+            format="markdown",
+            timeframe=timeframe,
+            side="neutral",
+        )
 
         if dry_run:
             typer.echo("")
@@ -1755,7 +1767,13 @@ def ai_analyze(
     # 4. Build message
     tf_label = timeframe.upper()
     title = f"[{sym} {tf_label}] AI 分析报告"
-    message = NotificationMessage(title=title, body=report, format="markdown")
+    message = NotificationMessage(
+        title=title,
+        body=report,
+        format="markdown",
+        timeframe=timeframe,
+        side=market_data.working_trend,
+    )
 
     if dry_run:
         typer.secho("[dry-run] would send:", fg=typer.colors.YELLOW, bold=True)
