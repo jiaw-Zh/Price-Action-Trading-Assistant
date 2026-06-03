@@ -172,14 +172,14 @@ def build_market_prompt(data: MarketData, language: str = "zh") -> str:
             lines.append("     * Price Down + Funding Rate Up => Overleveraged retail bottom-fishing (Highly bearish divergence, long trap).")
             lines.append("   - Assess funding rate extremes to guard against contrarian washouts in overleveraged environments.")
             lines.append("3. **Liquidity Magnets & Key Levels**: Identify nearest unswept liquidity pools (magnets) and structural invalidation levels.")
-
+ 
         if not is_short_tf and data.timeframe.lower() in ["4h", "1d"]:
             lines.append("")
             lines.append("## Macro Cycle & Funding Fuel Theory (4H/1D Exclusive)")
             lines.append("- Synthesize the HTF Trend with the global weighted funding rate:")
             lines.append("  * **Bullish Accumulation / Short Fuel (Rule A)**: If the high-timeframe trend is bullish and the funding rate is negative/extremely low, it indicates heavy retail shorting/hedging. Under a macro uptrend, these short positions will serve as '上涨燃料 (Fuel for Short Squeeze)' to accelerate the next markup. Focus on buying the dips (e.g. Springs or support zones) rather than following the negative rate bearishly.")
             lines.append("  * **Bearish Trap / Long Fuel (Rule B)**: If the high-timeframe trend is bearish and the funding rate is positive, it indicates overleveraged retail bottom-fishing. Under a macro downtrend, these long positions will serve as '下跌燃料 (Fuel for Long Liquidation)' to accelerate the next markdown. Focus on selling the rallies (e.g. order blocks or resistance zones) and strictly avoid any buying recommendations.")
-
+ 
         if not is_short_tf:
             option_duration = "intraday scalp (holding hours)" if data.timeframe in ["1m", "5m", "15m"] else "swing trade (holding days)"
             lines.append(f"- **Horizon Alignment**: The working timeframe is {data.timeframe}, so the trade setup must reflect this horizon: expected to be an {option_duration}.")
@@ -189,8 +189,8 @@ def build_market_prompt(data: MarketData, language: str = "zh") -> str:
             lines.append("- Use clean GFM layout with headers, lists, and bold key prices.")
             lines.append("- Maintain a concise, direct, and objective tone. Cut out conversational fillers.")
             lines.append("- If data is insufficient, explicitly state 'INSUFFICIENT DATA - STAY NEUTRAL'.")
-
-
+ 
+ 
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -199,7 +199,29 @@ def build_market_prompt(data: MarketData, language: str = "zh") -> str:
     lines.append(f"**标的**: {data.symbol}")
     lines.append(f"**周期**: {data.timeframe}")
     lines.append(f"**当前价格**: ${data.current_price:,.2f}")
-    lines.append(f"**时间**: {data.timestamp:%Y-%m-%d %H:%M UTC}")
+
+    import re
+    from datetime import timezone, timedelta
+    delta = timedelta(0)
+    match = re.match(r"^(\d+)([mhdw])$", data.timeframe.lower())
+    if match:
+        val = int(match.group(1))
+        unit = match.group(2)
+        if unit == 'm':
+            delta = timedelta(minutes=val)
+        elif unit == 'h':
+            delta = timedelta(hours=val)
+        elif unit == 'd':
+            delta = timedelta(days=val)
+        elif unit == 'w':
+            delta = timedelta(weeks=val)
+
+    dt_utc = data.timestamp + delta
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    dt_sh = dt_utc.astimezone(timezone(timedelta(hours=8)))
+
+    lines.append(f"**时间**: {dt_sh:%Y-%m-%d %H:%M (上海时间)}" if language == "zh" else f"**Time**: {dt_sh:%Y-%m-%d %H:%M (Shanghai Time)}")
     lines.append("")
 
     # Wyckoff

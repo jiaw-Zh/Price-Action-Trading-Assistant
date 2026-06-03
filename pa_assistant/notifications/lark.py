@@ -201,7 +201,16 @@ class LarkChannel:
             proxy=self._proxy_url, timeout=self._timeout_s
         ) as client:
             response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                try:
+                    err_detail = response.json()
+                except Exception:
+                    err_detail = response.text
+                log.error("lark_send_api_http_error", status_code=response.status_code, detail=err_detail)
+                raise RuntimeError(f"Lark API HTTP {response.status_code} error: {err_detail}") from e
+            
             data = response.json()
             err = data.get("code", 0)
             if err != 0:
