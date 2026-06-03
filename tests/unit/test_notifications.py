@@ -298,3 +298,45 @@ async def test_send_to_all_isolates_failures() -> None:
 async def test_send_to_all_with_no_channels_returns_empty() -> None:
     outcome = await send_to_all([], NotificationMessage(title="T", body="B"))
     assert outcome == {}
+
+
+def test_format_lark_markdown() -> None:
+    from pa_assistant.notifications.lark import format_lark_markdown
+
+    # 1. 战术与方向美化（中文）
+    text_zh = "[方向：看空 / 级别：1H] 核心战术：等待价格反弹至关键阻力区做空。"
+    res_zh = format_lark_markdown(text_zh)
+    assert "**🔴 方向：看空 / 级别：1H**" in res_zh
+    assert "🔑 **核心战术：等待价格反弹至关键阻力区做空。**" in res_zh
+
+    # 2. 战术与方向美化（英文 + 1D）
+    text_en = "[Direction: Bullish / Timeframe: 1D] Tactics: Buy the dip."
+    res_en = format_lark_markdown(text_en)
+    assert "**🟢 Direction: Bullish / Timeframe: 1D**" in res_en
+    assert "🔑 **Tactics: Buy the dip.**" in res_en
+
+    # 3. 标题与图标检测（中文 + 英文）
+    text_headers = """
+### 1. 关键位置与边界测试
+价格处于看跌订单块下方。
+
+### 2. 短期结构转变 (Structure Shift)
+结构转空。
+
+### 3. CVD/OI 与量价背离研判
+CVD大幅下跌。
+
+### 4. 简洁交易策略建议
+策略建议内容。
+"""
+    res_headers = format_lark_markdown(text_headers)
+    assert "**🎯 1. 关键位置与边界测试**" in res_headers
+    assert "**📊 2. 短期结构转变 (Structure Shift)**" in res_headers
+    assert "**⚡️ 3. CVD/OI 与量价背离研判**" in res_headers
+    assert "**💡 4. 简洁交易策略建议**" in res_headers
+
+    # 4. 多余换行清洗
+    text_newlines = "Line1\n\n\n\nLine2"
+    res_newlines = format_lark_markdown(text_newlines)
+    assert res_newlines == "Line1\n\nLine2"
+

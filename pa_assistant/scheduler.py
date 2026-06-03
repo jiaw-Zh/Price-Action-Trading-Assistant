@@ -583,11 +583,26 @@ async def run_analysis_job(
         )
 
         # 3. Build notification message
+        import re
         from datetime import timezone, timedelta
         tf_label = timeframe.upper()
 
-        # Convert timestamp to Shanghai time (UTC+8)
-        dt_utc = market_data.timestamp
+        # Convert timestamp to Shanghai time (UTC+8) and shift to represent data cutoff (close time)
+        delta = timedelta(0)
+        match = re.match(r"^(\d+)([mhdw])$", timeframe.lower())
+        if match:
+            val = int(match.group(1))
+            unit = match.group(2)
+            if unit == 'm':
+                delta = timedelta(minutes=val)
+            elif unit == 'h':
+                delta = timedelta(hours=val)
+            elif unit == 'd':
+                delta = timedelta(days=val)
+            elif unit == 'w':
+                delta = timedelta(weeks=val)
+
+        dt_utc = market_data.timestamp + delta
         if dt_utc.tzinfo is None:
             dt_utc = dt_utc.replace(tzinfo=timezone.utc)
         dt_sh = dt_utc.astimezone(timezone(timedelta(hours=8)))

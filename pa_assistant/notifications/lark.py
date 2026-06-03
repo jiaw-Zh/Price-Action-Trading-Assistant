@@ -34,6 +34,59 @@ if TYPE_CHECKING:
 
 import json
 
+def format_lark_markdown(text: str) -> str:
+    import re
+
+    # 1. 美化方向与核心战术首行
+    def format_tactics(match):
+        info = match.group(1).strip()
+        tactics_label = match.group(2).strip()
+        tactics_content = match.group(3).strip()
+
+        # 根据多空提供红绿色视觉指示
+        info_lower = info.lower()
+        direction_emoji = "⚪"
+        if any(x in info_lower for x in ["看空", "做空", "bearish", "short"]):
+            direction_emoji = "🔴"
+        elif any(x in info_lower for x in ["看多", "做多", "bullish", "long"]):
+            direction_emoji = "🟢"
+
+        sep = "" if "核心战术" in tactics_label else " "
+        return f"**{direction_emoji} {info}**\n🔑 **{tactics_label}{sep}{tactics_content}**\n"
+
+    # 支持中文 核心战术： 与英文 Tactics:
+    text = re.sub(
+        r'^\[(.*?)\]\s*(核心战术：|Tactics:)\s*(.*?)$',
+        format_tactics,
+        text,
+        flags=re.MULTILINE
+    )
+
+    # 2. 转换 ### 标题为加粗行并配上合适的 Emoji
+    def replace_header(match):
+        content = match.group(2).strip()
+        content_lower = content.lower()
+        emoji = "📌"
+        if any(x in content_lower for x in ["关键位置", "边界测试", "key levels", "boundary"]):
+            emoji = "🎯"
+        elif any(x in content_lower for x in ["结构", "structure"]):
+            emoji = "📊"
+        elif any(x in content_lower for x in ["cvd", "oi", "volume", "量价"]):
+            emoji = "⚡️"
+        elif any(x in content_lower for x in ["策略", "建议", "strategy", "plan"]):
+            emoji = "💡"
+        elif any(x in content_lower for x in ["风险提示", "防守", "risk", "defense"]):
+            emoji = "🛡️"
+
+        return f"\n**{emoji} {content}**\n"
+
+    text = re.sub(r'^(#+)\s*(.+)$', replace_header, text, flags=re.MULTILINE)
+
+    # 3. 清理换行
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = text.strip()
+    return text
+
 class LarkChannel:
     """Send messages via Lark / Feishu Custom App Bot."""
 
@@ -101,6 +154,9 @@ class LarkChannel:
         if message.timeframe and not message.title.startswith("["):
             card_title = f"[{message.timeframe.upper()}] {card_title}"
 
+        # Clean and beautify body markdown for Lark
+        formatted_body = format_lark_markdown(message.body)
+
         # Construct Lark Interactive Card Content
         card_content = {
             "config": {
@@ -118,7 +174,7 @@ class LarkChannel:
                 {
                     "tag": "div",
                     "text": {
-                        "content": message.body,
+                        "content": formatted_body,
                         "tag": "lark_md",
                     },
                 }
