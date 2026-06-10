@@ -1816,6 +1816,176 @@ def ai_analyze(
         raise typer.Exit(code=1)
 
 
+@app.command(name="driver-report")
+def driver_report(
+    timeframe: str = typer.Option("1h", help="Working timeframe."),
+    dry_run: bool = typer.Option(
+        False, help="Build & print the message but don't send it anywhere."
+    ),
+    symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
+) -> None:
+    """Build a price driver analysis report (OI + CVD + Price + Funding) and optionally push it."""
+    import duckdb
+    from datetime import timezone, timedelta
+    import re
+
+    from pa_assistant.analysis import (
+        detect_divergences,
+        resample_ohlcv,
+        compute_delta,
+        analyze_price_driver,
+        render_driver_markdown,
+    )
+    from pa_assistant.notifications import (
+        NotificationMessage,
+        configured_channels,
+        send_to_all,
+    )
+    from pa_assistant.scheduler import _drop_incomplete_candle
+
+    settings = get_settings()
+    _bootstrap(settings)
+    sym = (symbol or settings.symbol).upper()
+
+    # 1. Load raw data from DuckDB
+    conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
+    try:
+        klines = load_klines_from_db(
+            conn,
+            sym,
+            timeframe,
+            columns=["open_time", "open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]
+        )
+        oi_df = load_oi_from_db(conn, sym, timeframe)
+        funding_row = conn.execute(
+            "SELECT weighted_rate FROM funding_weighted "
+            "WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+            [sym],
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if klines.is_empty():
+        typer.secho(f"No klines for {sym}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    # 2. Resample & compute CVD/Delta
+    working = resample_ohlcv(klines, timeframe)
+    working = _drop_incomplete_candle(working, timeframe)
+    working = compute_delta(working)
+    if not oi_df.is_empty():
+        working = working.sort("open_time").join_asof(
+            oi_df.sort("open_time"), on="open_time", strategy="backward"
+        )
+
+    if working.height < 2:
+        typer.secho("Not enough historical data to compute price driver.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    last_row = working.row(working.height - 1, named=True)
+    prev_row = working.row(working.height - 2, named=True)
+
+    # 3. Detect divergences and filter recent ones (last 3 candles)
+    divergences = detect_divergences(working)
+    recent_divs = []
+    last_ts = last_row["open_time"]
+    if divergences:
+        timeframe_minutes = {
+            "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+            "1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480,
+            "12h": 720, "1d": 1440, "1w": 10080,
+        }
+        mins = timeframe_minutes.get(timeframe.lower(), 60)
+        cutoff = last_ts - timedelta(minutes=mins * 3)
+        recent_divs = [d for d in divergences if d.timestamp >= cutoff]
+
+    funding_rate = float(funding_row[0]) if funding_row else None
+
+    # 4. Run driver analysis
+    verdict = analyze_price_driver(
+        symbol=sym,
+        timeframe=timeframe,
+        timestamp=last_ts,
+        price_open=float(last_row["open"]),
+        price_close=float(last_row["close"]),
+        oi_start=float(prev_row["oi"]) if "oi" in prev_row and prev_row["oi"] is not None else None,
+        oi_end=float(last_row["oi"]) if "oi" in last_row and last_row["oi"] is not None else None,
+        cvd_change=float(last_row["delta"]),
+        total_volume=float(last_row["volume"]),
+        funding_rate=funding_rate,
+        divergences=recent_divs,
+    )
+
+    # 5. Render & display/send
+    body = render_driver_markdown(verdict)
+    
+    tf_label = timeframe.upper()
+    dt_utc = last_ts
+    delta = timedelta(0)
+    match = re.match(r"^(\d+)([mhdw])$", timeframe.lower())
+    if match:
+        val = int(match.group(1))
+        unit = match.group(2)
+        if unit == 'm':
+            delta = timedelta(minutes=val)
+        elif unit == 'h':
+            delta = timedelta(hours=val)
+        elif unit == 'd':
+            delta = timedelta(days=val)
+        elif unit == 'w':
+            delta = timedelta(weeks=val)
+    dt_utc += delta
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    dt_sh = dt_utc.astimezone(timezone(timedelta(hours=8)))
+    time_str = dt_sh.strftime("%Y.%m.%d %I%p")
+
+    title = f"[{time_str} {sym} {tf_label}] 价格驱动力报告"
+    message = NotificationMessage(
+        title=title,
+        body=body,
+        format="markdown",
+        timeframe=timeframe,
+        side=verdict.driver_side,
+    )
+
+    if dry_run:
+        typer.secho("[dry-run] would send:", fg=typer.colors.YELLOW, bold=True)
+        typer.echo(f"\nTitle: {message.title}\n")
+        typer.echo(message.body)
+        return
+
+    # Dispatch to channels (with timeframe-specific Lark overrides)
+    channels = configured_channels(settings)
+    from pa_assistant.notifications import get_lark_channel_for_timeframe
+    lark_override = get_lark_channel_for_timeframe(settings, timeframe)
+    if lark_override:
+        channels = [c for c in channels if c.name != "lark"]
+        channels.append(lark_override)
+
+    if not channels:
+        typer.secho(
+            "No notification channels configured. "
+            "Set TELEGRAM_BOT_TOKEN, WECHAT_WORK_WEBHOOK_URL, or LARK_WEBHOOK_URL in .env",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=2)
+
+    typer.echo(f"Dispatching to {len(channels)} channel(s)...")
+    outcome = asyncio.run(send_to_all(channels, message))
+    successes = [name for name, err in outcome.items() if err is None]
+    failures = [name for name, err in outcome.items() if err is not None]
+
+    for name in successes:
+        typer.secho(f"  ✓ {name}", fg=typer.colors.GREEN)
+    for name in failures:
+        err = outcome[name]
+        typer.secho(f"  ✗ {name}: {err}", fg=typer.colors.RED)
+
+    if failures and not successes:
+        raise typer.Exit(code=1)
+
+
 @app.command(name="schedule-start")
 def schedule_start(
     language: str = typer.Option("zh", help="Report language (zh/en)."),

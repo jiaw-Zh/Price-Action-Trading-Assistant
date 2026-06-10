@@ -42,6 +42,11 @@ from pa_assistant.analysis.divergence import (
     DivergenceEvent,
     detect_divergences,
 )
+from pa_assistant.analysis.driver import (
+    DriverVerdict,
+    analyze_price_driver,
+    render_driver_markdown,
+)
 from pa_assistant.analysis.liquidity import (
     LiquidityLevel,
     detect_liquidity_levels,
@@ -74,6 +79,7 @@ from pa_assistant.analysis.zones import (
 __all__ = [
     "ContextReport",
     "DivergenceEvent",
+    "DriverVerdict",
     "FairValueGap",
     "FlowContext",
     "FundingContext",
@@ -92,6 +98,7 @@ __all__ = [
     "WyckoffPhase",
     "WyckoffSnapshot",
     "ZoneContext",
+    "analyze_price_driver",
     "analyze_wyckoff",
     "build_context_report",
     "build_flow_context",
@@ -113,6 +120,7 @@ __all__ = [
     "detect_swings",
     "detect_wyckoff_events",
     "evolve",
+    "render_driver_markdown",
     "render_markdown",
     "render_text",
     "resample_ohlcv",
