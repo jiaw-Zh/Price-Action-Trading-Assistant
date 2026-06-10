@@ -167,9 +167,9 @@ uv run pa schedule-start
 
 | 定时触发点 (北京时间) | 触发频率 | 策略分析周期 | 高周期参考 | 定时器机制 | 说明 |
 |:---|:---|:---|:---|:---|:---|
-| **每天 08:05** | 每天一次 | **1D（日K）** | 无 | `CronTrigger` | 宏观大周期研判，激活【宏观周期与资金燃料定律】。自动切除未收盘的今日线。 |
-| **每小时的第 5 分钟** (如 13:05, 14:05...) | 每小时一次 | **1H（小时K）** | **4H** | `CronTrigger` | 日内短线与突破研判，自动切除未收盘的本小时线。 |
-| **每 4 小时收盘后 5 分钟** (00/04/08/12/16/20:05) | 每4小时一次 | **4H（波段K）** | **1D** | `CronTrigger` | 中线波段策略分析，激活【宏观周期与资金燃料定律】，自动切除未收盘的本4小时线。 |
+| **每天 08:05** | 每天一次 | **1D（日K）** | 无 | `CronTrigger` | 宏观大周期研判，激活【宏观周期与资金燃料定律】（基于 LLM 分析与推送）。自动切除未收盘的今日线。 |
+| **每小时的第 5 分钟** (如 13:05, 14:05...) | 每小时一次 | **1H（小时K）** | 无 | `CronTrigger` | 日内短线价格驱动力研判，使用**轻量化规则驱动力推导算法（非 AI 接口，极速且省成本）**推送精简版报告。自动切除未收盘的本小时线。 |
+| **每 4 小时收盘后 5 分钟** (00/04/08/12/16/20:05) | 每4小时一次 | **4H（波段K）** | **1D** | `CronTrigger` | 中线波段策略分析，激活【宏观周期与资金燃料定律】（基于 LLM 分析与推送），自动切除未收盘的本4小时线。 |
 
 ### 并发安全互斥锁与防抖去重机制 (`asyncio.Lock` + `Cache`)
 
@@ -250,13 +250,16 @@ WECHAT_WORK_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOU
 | `pa wyckoff --timeframe TF` | Wyckoff 阶段状态机 |
 | `pa context-report --timeframe TF [--htf TF]` | 情境聚合报告 |
 
-### AI 分析 + 推送
+### 策略分析与报告推送
 
 | 命令 | 用途 |
 |---|---|
 | `pa ai-analyze --timeframe 1h` | AI 分析并推送到飞书（自动拉取数据） |
 | `pa ai-analyze --timeframe 1h --dry-run` | 试运行，只打印不推送 |
 | `pa ai-analyze --timeframe 1h --no-fetch` | 跳过数据拉取，使用已有数据 |
+| `pa driver-report --timeframe 1h` | 规则驱动力分析报告并推送（自动拉取数据，不消耗 AI 额度） |
+| `pa driver-report --timeframe 1h --dry-run` | 价格驱动力报告试运行预览 |
+| `pa driver-report --timeframe 1h --no-fetch` | 跳过拉取直接根据缓存运行价格驱动力报告 |
 | `pa schedule-start` | 启动定时调度器（后台运行） |
 | `pa send-alert --timeframe TF [--htf TF]` | 推送规则引擎报告（非 AI） |
 
@@ -288,6 +291,7 @@ pa_assistant/
 │   ├── stop_hunt.py         # Stop Hunt / 流动性扫荡检测
 │   ├── divergence.py        # 多指标背离（CVD/Volume/OI）
 │   ├── wyckoff.py           # Wyckoff 阶段状态机（FSM）
+│   ├── driver.py            # 价格驱动力规则推导模块（多空发力与建仓识别）
 │   ├── context.py           # 情境聚合报告（7 子上下文 + Scorecard）
 │   └── llm.py               # LLM 分析模块（OpenAI 兼容 API）
 ├── notifications/           # 推送通道

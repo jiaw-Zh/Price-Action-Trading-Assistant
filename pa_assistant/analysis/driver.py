@@ -135,24 +135,24 @@ def _match_pattern(
             )
         if oi_dir == "flat" and cvd_dir in ("down", "flat"):
             return (
-                "上涨动力不足",
-                "neutral",
+                "多头推进但动力不足",
+                "bullish",
                 "low",
-                "价格微涨但缺乏量能配合",
+                "多头在发力推动价格微涨，但缺乏持仓量与主动买盘配合，随时可能衰竭",
             )
         if oi_dir == "unknown" and cvd_dir == "up":
             return (
-                "买盘推动上涨",
+                "多头买盘推动上涨",
                 "bullish",
                 "medium",
                 "主动买盘占优推动价格上涨",
             )
         if oi_dir == "unknown" and cvd_dir in ("down", "flat"):
             return (
-                "上涨动力存疑",
-                "neutral",
+                "多头推进但买盘存疑",
+                "bullish",
                 "low",
-                "价格上涨但缺乏真实买盘支撑",
+                "多头在发力推进价格，但缺乏持仓数据与主动买盘支撑，上涨可能不健康",
             )
 
     # --- Price DOWN ---
@@ -187,24 +187,24 @@ def _match_pattern(
             )
         if oi_dir == "flat" and cvd_dir in ("up", "flat"):
             return (
-                "下跌动力不足",
-                "neutral",
+                "空头推进但动力不足",
+                "bearish",
                 "low",
-                "价格微跌但缺乏量能配合",
+                "空头在发力压低价格，但缺乏持仓量与主动卖盘配合，随时可能反弹",
             )
         if oi_dir == "unknown" and cvd_dir == "down":
             return (
-                "卖盘推动下跌",
+                "空头卖盘推动下跌",
                 "bearish",
                 "medium",
                 "主动卖盘占优推动价格下跌",
             )
         if oi_dir == "unknown" and cvd_dir in ("up", "flat"):
             return (
-                "下跌动力存疑",
-                "neutral",
+                "空头推进但卖盘存疑",
+                "bearish",
                 "low",
-                "价格下跌但缺乏真实卖盘支撑",
+                "空头在发力压低价格，但缺乏持仓数据与主动卖盘支撑，下跌可能不健康",
             )
 
     # --- Price FLAT ---
