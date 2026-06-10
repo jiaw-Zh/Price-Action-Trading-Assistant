@@ -1822,10 +1822,14 @@ def driver_report(
     dry_run: bool = typer.Option(
         False, help="Build & print the message but don't send it anywhere."
     ),
+    no_fetch: bool = typer.Option(
+        False, "--no-fetch", help="Skip fetching latest data from exchanges."
+    ),
     symbol: str | None = typer.Option(None, help="Override SYMBOL setting."),
 ) -> None:
     """Build a price driver analysis report (OI + CVD + Price + Funding) and optionally push it."""
     import duckdb
+    import asyncio
     from datetime import timezone, timedelta
     import re
 
@@ -1841,11 +1845,17 @@ def driver_report(
         configured_channels,
         send_to_all,
     )
-    from pa_assistant.scheduler import _drop_incomplete_candle
+    from pa_assistant.scheduler import _drop_incomplete_candle, fetch_latest_data
 
     settings = get_settings()
     _bootstrap(settings)
     sym = (symbol or settings.symbol).upper()
+
+    # 0. Fetch latest data from exchanges
+    if not no_fetch:
+        typer.echo("正在从交易所拉取最新数据...")
+        asyncio.run(fetch_latest_data(settings, days=1))
+        typer.echo("数据拉取完成")
 
     # 1. Load raw data from DuckDB
     conn = duckdb.connect(str(settings.duckdb_path), read_only=True)
